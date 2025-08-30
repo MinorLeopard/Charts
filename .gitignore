@@ -1,0 +1,15 @@
+# node
+.node_modules
+.next
+out
+.dist
+coverage
+.env*
+# python
+__pycache__/
+.venv/
+# docker
+*.log
+# app data
+/.data/
+*.csv
