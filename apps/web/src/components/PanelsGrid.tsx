@@ -5,10 +5,20 @@ import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
 
 export default function PanelsGrid() {
   const layout = useChartStore(s => s.layout);
+  const maximized = useChartStore(s => s.maximizedPanelId);
+
+  // Fullscreen one panel
+  if (maximized) {
+    return (
+      <div className="h-[calc(100vh-96px)] min-h-[600px]">
+        <ChartPanel panelId={maximized} />
+      </div>
+    );
+  }
 
   if (layout === "1x1") {
     return (
-      <div className="h-[70vh] min-h-[500px]">
+      <div className="h-[calc(100vh-96px)] min-h-[600px]">
         <ChartPanel panelId="p1" />
       </div>
     );
@@ -16,10 +26,11 @@ export default function PanelsGrid() {
 
   if (layout === "2x1") {
     return (
-      <div className="h-[70vh] min-h-[500px]">
-        <PanelGroup direction="horizontal" className="h-full gap-2">
+      <div className="h-[calc(100vh-96px)] min-h-[600px]">
+        {/* remove gaps; borders on panels become the dividers */}
+        <PanelGroup direction="horizontal" className="h-full">
           <Panel defaultSize={50} minSize={20}><div className="h-full"><ChartPanel panelId="p1" /></div></Panel>
-          <PanelResizeHandle className="w-1 bg-border" />
+          <PanelResizeHandle className="w-[1px] bg-[var(--panel-border)]" />
           <Panel defaultSize={50} minSize={20}><div className="h-full"><ChartPanel panelId="p2" /></div></Panel>
         </PanelGroup>
       </div>
@@ -28,20 +39,20 @@ export default function PanelsGrid() {
 
   // 2x2
   return (
-    <div className="h-[70vh] min-h-[500px]">
-      <PanelGroup direction="vertical" className="h-full gap-2">
+    <div className="h-[calc(100vh-96px)] min-h-[600px]">
+      <PanelGroup direction="vertical" className="h-full">
         <Panel defaultSize={50} minSize={20}>
-          <PanelGroup direction="horizontal" className="h-full gap-2">
+          <PanelGroup direction="horizontal" className="h-full">
             <Panel defaultSize={50} minSize={20}><div className="h-full"><ChartPanel panelId="p1" /></div></Panel>
-            <PanelResizeHandle className="w-1 bg-border" />
+            <PanelResizeHandle className="w-[1px] bg-[var(--panel-border)]" />
             <Panel defaultSize={50} minSize={20}><div className="h-full"><ChartPanel panelId="p2" /></div></Panel>
           </PanelGroup>
         </Panel>
-        <PanelResizeHandle className="h-1 bg-border" />
+        <PanelResizeHandle className="h-[1px] bg-[var(--panel-border)]" />
         <Panel defaultSize={50} minSize={20}>
-          <PanelGroup direction="horizontal" className="h-full gap-2">
+          <PanelGroup direction="horizontal" className="h-full">
             <Panel defaultSize={50} minSize={20}><div className="h-full"><ChartPanel panelId="p3" /></div></Panel>
-            <PanelResizeHandle className="w-1 bg-border" />
+            <PanelResizeHandle className="w-[1px] bg-[var(--panel-border)]" />
             <Panel defaultSize={50} minSize={20}><div className="h-full"><ChartPanel panelId="p4" /></div></Panel>
           </PanelGroup>
         </Panel>

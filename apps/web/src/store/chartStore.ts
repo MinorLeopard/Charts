@@ -20,17 +20,24 @@ export type WatchItem = {
 };
 
 type ChartStore = {
-  // modes & layout
   mode: Mode;
   setMode: (m: Mode) => void;
+
   layout: LayoutId;
   setLayout: (l: LayoutId) => void;
 
-  // panels
   panels: Record<PanelId, PanelState>;
   activePanelId: PanelId;
   setActivePanel: (id: PanelId) => void;
   setPanelSymbol: (id: PanelId, symbol: string) => void;
+
+  // NEW
+  getVisiblePanels: () => PanelId[];
+  getNextFreePanel: () => PanelId | null;
+
+  // maximize / restore
+  maximizedPanelId: PanelId | null;
+  toggleMaximize: (id: PanelId) => void;
 
   // watchlist
   watchlist: WatchItem[];
@@ -52,22 +59,21 @@ const persistedLayout = typeof window !== "undefined" ? (localStorage.getItem("l
 const persistedMode = typeof window !== "undefined" ? (localStorage.getItem("mode") as Mode | null) : null;
 const persistedWatch = typeof window !== "undefined" ? JSON.parse(localStorage.getItem("watchlist") || "[]") as WatchItem[] : [];
 
-export const useChartStore = create<ChartStore>((set, get) => ({
-  // mode
-  mode: persistedMode ?? "offline",
-  setMode: (m) => {
-    if (typeof window !== "undefined") localStorage.setItem("mode", m);
-    set({ mode: m });
-  },
+const visibleFor = (l: LayoutId): PanelId[] =>
+  l === "1x1" ? ["p1"] :
+  l === "2x1" ? ["p1","p2"] :
+               ["p1","p2","p3","p4"];
 
-  // layout
+export const useChartStore = create<ChartStore>((set, get) => ({
+  mode: persistedMode ?? "offline",
+  setMode: (m) => { if (typeof window !== "undefined") localStorage.setItem("mode", m); set({ mode: m }); },
+
   layout: persistedLayout ?? "1x1",
   setLayout: (l) => {
     if (typeof window !== "undefined") localStorage.setItem("layout", l);
-    set({ layout: l });
+    set({ layout: l, activePanelId: "p1" }); // default focus to p1 on layout change
   },
 
-  // panels
   panels: persistedPanels ? JSON.parse(persistedPanels) : initialPanels,
   activePanelId: "p1",
   setActivePanel: (id) => set({ activePanelId: id }),
@@ -77,7 +83,20 @@ export const useChartStore = create<ChartStore>((set, get) => ({
     set({ panels: next });
   },
 
-  // watchlist
+  // NEW helpers
+  getVisiblePanels: () => visibleFor(get().layout),
+  getNextFreePanel: () => {
+    const vis = visibleFor(get().layout);
+    const { panels } = get();
+    const empty = vis.find(pid => !panels[pid]?.symbol);
+    return empty ?? null;
+  },
+
+  maximizedPanelId: null,
+  toggleMaximize: (id) => {
+    set((s) => ({ maximizedPanelId: s.maximizedPanelId === id ? null : id }));
+  },
+
   watchlist: persistedWatch,
   addToWatchlist: (it) => set((s) => {
     const exists = s.watchlist.some(w => w.symbol === it.symbol && w.source === it.source);
