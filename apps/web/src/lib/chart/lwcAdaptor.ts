@@ -1,4 +1,3 @@
-// src/lib/chart/lwcAdapter.ts   (rename from lwcAdaptor to avoid typos)
 import {
   createChart,
   CandlestickSeries,
@@ -7,9 +6,14 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 
-export type OHLC = { t:number; o:number; h:number; l:number; c:number; v:number };
+export type OHLC = { t:number;o:number;h:number;l:number;c:number;v:number };
 
-export function mountLwc(el: HTMLDivElement) {
+export type LwcAdapter = {
+  chart: IChartApi;
+  setData: (bars: OHLC[]) => void;
+};
+
+export function mountLwc(el: HTMLDivElement): LwcAdapter {
   const chart: IChartApi = createChart(el, {
     autoSize: true,
     rightPriceScale: { borderVisible: false },
@@ -17,19 +21,13 @@ export function mountLwc(el: HTMLDivElement) {
     layout: { fontFamily: "Inter, system-ui, sans-serif" },
   });
 
-  // v5: addSeries(<SeriesDefinition>, <options>)
-  const candleSeries = chart.addSeries(CandlestickSeries, {
-    priceScaleId: "right",
-  });
-
+  const candleSeries = chart.addSeries(CandlestickSeries, { priceScaleId: "right" });
   const volumeSeries = chart.addSeries(HistogramSeries, {
     priceScaleId: "left",
     priceFormat: { type: "volume" },
   });
 
-  chart.priceScale("left").applyOptions({
-    scaleMargins: { top: 0.8, bottom: 0 },
-  });
+  chart.priceScale("left").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
 
   function setData(bars: OHLC[]) {
     const price = bars.map(b => ({
@@ -40,10 +38,9 @@ export function mountLwc(el: HTMLDivElement) {
       time: Math.floor(b.t / 1000) as UTCTimestamp,
       value: b.v,
     }));
-
     candleSeries.setData(price);
     volumeSeries.setData(vol);
   }
 
-  return { chart, setData, candleSeries, volumeSeries };
+  return { chart, setData };
 }

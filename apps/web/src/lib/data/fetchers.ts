@@ -1,20 +1,19 @@
 import { getLocalBars } from "./indexedDB";
+import type { OHLC } from "../chart/lwcAdaptor";
 
-// NOTE: On the client, NEXT_PUBLIC_* envs are inlined at build time.
-// Provide a safe default so it never blows up at runtime.
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api/mock";
 
-export async function fetchOnline(symbol: string, tf: string) {
+export async function fetchOnline(symbol: string, tf: string): Promise<OHLC[]> {
   const res = await fetch(`${BASE}/candles?symbol=${encodeURIComponent(symbol)}&tf=${tf}&limit=5000`);
   if (!res.ok) throw new Error("online fetch failed");
-  const json = await res.json();
-  return json.data as any[];
+  const json: { data: OHLC[] } = await res.json();
+  return json.data;
 }
 
-export async function fetchMock(symbol: string, tf: string) {
+export async function fetchMock(symbol: string, tf: string): Promise<OHLC[]> {
   const N = 1000, now = Date.now();
   const step = tf.endsWith("m") ? parseInt(tf) * 60_000 : 300_000;
-  const out: any[] = [];
+  const out: OHLC[] = [];
   let price = 100;
   for (let i = N - 1; i >= 0; i--) {
     const t = now - i * step;
@@ -28,8 +27,8 @@ export async function fetchMock(symbol: string, tf: string) {
   return out;
 }
 
-export async function fetchSeries(mode: "online" | "offline", symbol: string, tf: string) {
-  if (BASE && BASE.includes("/api/mock")) return fetchMock(symbol, tf);
+export async function fetchSeries(mode: "online" | "offline", symbol: string, tf: string): Promise<OHLC[]> {
+  if (BASE.includes("/api/mock")) return fetchMock(symbol, tf);
   if (mode === "online") return fetchOnline(symbol, tf);
   return getLocalBars(symbol, tf);
 }
