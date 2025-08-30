@@ -1,4 +1,4 @@
-import { getLocalBars } from "./indexeddb";
+import { getLocalBars } from "./indexedDB";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE!;
 
