@@ -9,10 +9,13 @@ import { CrosshairMode } from "lightweight-charts";
 import type {
   MouseEventParams,
   SeriesDataItemTypeMap,
-  CandlestickData,
   UTCTimestamp,
-  Time,
 } from "lightweight-charts";
+import type { CandlestickData, Time } from "lightweight-charts";
+
+interface CandlestickWithVol extends CandlestickData<Time> {
+  volume?: number;
+}
 
 
 type PriceRange = { from: number; to: number };
@@ -127,24 +130,22 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       }
 
       // First series' data point
-      const first = Array.from(param.seriesData.values())[0] as SeriesDataItemTypeMap["Candlestick"];
+      const first = Array.from(param.seriesData.values())[0] as CandlestickWithVol;
 
-      // Narrow to candlestick data
-      if (!first || typeof (first as CandlestickData<Time>).open !== "number") {
+      if (!first || typeof first.open !== "number") {
         setOhlc(null);
         return;
       }
 
-      const candle = first as CandlestickData<Time>;
-
       setOhlc({
-        o: candle.open,
-        h: candle.high,
-        l: candle.low,
-        c: candle.close,
-        v: (candle as any).volume, // volume if you extended OHLC
+        o: first.open,
+        h: first.high,
+        l: first.low,
+        c: first.close,
+        v: first.volume,
         time: param.time as UTCTimestamp,
       });
+
     };
 
     api.chart.subscribeCrosshairMove(onMove);
