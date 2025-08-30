@@ -2,13 +2,24 @@
 import { useChartStore } from "@/store/chartStore";
 import ChartPanel from "./ChartPanel";
 import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
-
+import { useIsClient } from "@/lib/useIsClient";
 export default function PanelsGrid() {
   const layout = useChartStore(s => s.layout);
+  const maximized = useChartStore(s => s.maximizedPanelId);
+  const isClient = useIsClient();
+  if (!isClient) return <div className="h-[calc(100vh-96px)]" />;
+  // Fullscreen a single panel
+  if (maximized) {
+    return (
+      <div className="h-[calc(100vh-96px)] min-h-[600px]">
+        <ChartPanel panelId={maximized} />
+      </div>
+    );
+  }
 
   if (layout === "1x1") {
     return (
-      <div className="h-[70vh] min-h-[500px]">
+      <div className="h-[calc(100vh-96px)] min-h-[600px]">
         <ChartPanel panelId="p1" />
       </div>
     );
@@ -16,7 +27,7 @@ export default function PanelsGrid() {
 
   if (layout === "2x1") {
     return (
-      <div className="h-[70vh] min-h-[500px]">
+      <div className="h-[calc(100vh-96px)] min-h-[600px]">
         <PanelGroup direction="horizontal" className="h-full gap-2">
           <Panel defaultSize={50} minSize={20}><div className="h-full"><ChartPanel panelId="p1" /></div></Panel>
           <PanelResizeHandle className="w-1 bg-border" />
@@ -28,7 +39,7 @@ export default function PanelsGrid() {
 
   // 2x2
   return (
-    <div className="h-[70vh] min-h-[500px]">
+    <div className="h-[calc(100vh-96px)] min-h-[600px]">
       <PanelGroup direction="vertical" className="h-full gap-2">
         <Panel defaultSize={50} minSize={20}>
           <PanelGroup direction="horizontal" className="h-full gap-2">

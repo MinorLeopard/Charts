@@ -27,7 +27,9 @@ export default function CsvImportDialog() {
   const [busy, setBusy] = useState(false);
 
   const setMode = useChartStore.getState().setMode;
-  const activePanelId = useChartStore.getState().activePanelId;
+  const getNextFreePanel = useChartStore.getState().getNextFreePanel;
+  const setPanelSymbol = useChartStore.getState().setPanelSymbol;
+  const addToWatchlist = useChartStore.getState().addToWatchlist;
 
   const onFile = (file: File) => {
     setBusy(true);
@@ -76,13 +78,10 @@ export default function CsvImportDialog() {
           await putLocalBars(sym, tf, bars);
           setMode("offline");
 
-          // load into active panel
-          useChartStore.setState(s => ({
-            panels: { ...s.panels, [activePanelId]: { ...s.panels[activePanelId], symbol: sym, timeframe: tf } },
-          }));
+          const target = getNextFreePanel() ?? useChartStore.getState().activePanelId;
+          setPanelSymbol(target, sym);
 
-          // add to watchlist (persisted)
-          useChartStore.getState().addToWatchlist({
+          addToWatchlist({
             id: `local:${sym}:${tf}`,
             symbol: sym,
             label: sym,
