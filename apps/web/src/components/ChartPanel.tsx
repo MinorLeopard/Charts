@@ -6,6 +6,14 @@ import { useChartStore } from "@/store/chartStore";
 import { fetchSeries } from "@/lib/data/fetchers";
 import { Maximize2, Minimize2 } from "lucide-react";
 import { CrosshairMode } from "lightweight-charts";
+import type {
+  MouseEventParams,
+  SeriesDataItemTypeMap,
+  CandlestickData,
+  UTCTimestamp,
+  Time,
+} from "lightweight-charts";
+
 
 type PriceRange = { from: number; to: number };
 
@@ -111,28 +119,39 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
   // Crosshair → update OHLCV + Time
   useEffect(() => {
     if (!api) return;
-    const onMove = (param: any) => {
+
+    const onMove = (param: MouseEventParams) => {
       if (!param?.time || !param?.seriesData || param.seriesData.size === 0) {
         setOhlc(null);
         return;
       }
-      const first = Array.from(param.seriesData.values())[0] as any;
-      if (!first || typeof first.open !== "number") {
+
+      // First series' data point
+      const first = Array.from(param.seriesData.values())[0] as SeriesDataItemTypeMap["Candlestick"];
+
+      // Narrow to candlestick data
+      if (!first || typeof (first as CandlestickData<Time>).open !== "number") {
         setOhlc(null);
         return;
       }
+
+      const candle = first as CandlestickData<Time>;
+
       setOhlc({
-        o: first.open,
-        h: first.high,
-        l: first.low,
-        c: first.close,
-        v: first.volume,
-        time: Number(param.time),
+        o: candle.open,
+        h: candle.high,
+        l: candle.low,
+        c: candle.close,
+        v: (candle as any).volume, // volume if you extended OHLC
+        time: param.time as UTCTimestamp,
       });
     };
+
     api.chart.subscribeCrosshairMove(onMove);
     return () => api.chart.unsubscribeCrosshairMove(onMove);
   }, [api]);
+
+
 
   // ===== Vertical pan (Shift + drag) =====
   const drag = useRef<{ active: boolean; startY: number; startRange: PriceRange | null; height: number } | null>(null);
@@ -155,8 +174,9 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     if (!drag.current?.active || !api) return;
     const ps = api.chart.priceScale("right");
     ps.setAutoScale(false);
-    let base = drag.current.startRange ?? ps.getVisibleRange();
+    const base = drag.current.startRange ?? ps.getVisibleRange();
     if (!base) return;
+
     const dy = e.clientY - drag.current.startY;
     const pricePerPx = (base.to - base.from) / Math.max(1, drag.current.height);
     ps.setVisibleRange({ from: base.from + dy * pricePerPx, to: base.to + dy * pricePerPx });
