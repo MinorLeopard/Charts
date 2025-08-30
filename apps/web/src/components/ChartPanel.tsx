@@ -11,7 +11,10 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
   const panel = useChartStore(s => s.panels[panelId]);
   const setActivePanel = useChartStore(s => s.setActivePanel);
 
-  const symbol = panel.symbol || "DEMO";
+  // pick effective symbol
+  const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api/mock";
+  const fallbackDemo = BASE.includes("/api/mock") || mode === "online";
+  const effectiveSymbol = panel.symbol ?? (fallbackDemo ? "DEMO" : undefined);
   const tf = panel.timeframe;
 
   useEffect(() => {
@@ -23,20 +26,27 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
 
   useEffect(() => {
     if (!api) return;
+    if (!effectiveSymbol) {
+      // clear the chart if no symbol
+      api.setData([]);
+      return;
+    }
     (async () => {
-      const bars: OHLC[] = await fetchSeries(mode, symbol, tf);
+      const bars: OHLC[] = await fetchSeries(mode, effectiveSymbol, tf);
       api.setData(bars);
     })();
-  }, [api, mode, symbol, tf]);
+  }, [api, mode, effectiveSymbol, tf]);
 
-  const isActive = useChartStore(s => s.activePanelId === panelId);
   return (
-    <div
-      ref={ref}
-      className={`w-full h-full min-h-[40vh] rounded-lg border ${isActive ? "ring-2 ring-blue-600" : ""}`}
-      onMouseDown={() => setActivePanel(panelId)}
-      tabIndex={0}
-    />
+    <div className="relative w-full h-full min-h-[40vh] rounded-lg border" onMouseDown={() => setActivePanel(panelId)} tabIndex={0}>
+      {/* chart mount */}
+      <div ref={ref} className="absolute inset-0" />
+      {/* empty state */}
+      {!effectiveSymbol && (
+        <div className="absolute inset-0 flex items-center justify-center text-sm text-muted">
+          Select a symbol from the watchlist to load this panel.
+        </div>
+      )}
+    </div>
   );
-
 }
