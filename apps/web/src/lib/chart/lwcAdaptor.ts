@@ -18,7 +18,8 @@ export function mountLwc(el: HTMLDivElement): LwcAdapter {
     autoSize: true,
     rightPriceScale: { borderVisible: false },
     timeScale: { borderVisible: false },
-    layout: { fontFamily: "Inter, system-ui, sans-serif" },
+    layout: { fontFamily: "Inter, system-ui, sans-serif" , attributionLogo: false},
+    
   });
 
   const candleSeries = chart.addSeries(CandlestickSeries, { priceScaleId: "right" });

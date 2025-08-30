@@ -1,5 +1,5 @@
-import { getLocalBars } from "./indexedDB";
-import type { OHLC } from "../chart/lwcAdaptor";
+import { getLocalBars } from "@/lib/data/indexedDB";
+import type { OHLC } from "@/lib/chart/lwcAdaptor";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api/mock";
 
@@ -28,7 +28,7 @@ export async function fetchMock(symbol: string, tf: string): Promise<OHLC[]> {
 }
 
 export async function fetchSeries(mode: "online" | "offline", symbol: string, tf: string): Promise<OHLC[]> {
-  if (BASE.includes("/api/mock")) return fetchMock(symbol, tf);
-  if (mode === "online") return fetchOnline(symbol, tf);
-  return getLocalBars(symbol, tf);
+  if (mode === "offline") return getLocalBars(symbol, tf);            // ← prioritize offline
+  if (!BASE || BASE.includes("/api/mock")) return fetchMock(symbol, tf);
+  return fetchOnline(symbol, tf);
 }

@@ -69,14 +69,27 @@ export default function CsvImportDialog() {
             return;
           }
 
+
+
+          // after storing bars
           const sym = symbol || file.name.replace(/\..+$/, "");
           await putLocalBars(sym, tf, bars);
-
-          // auto-switch to offline and load
           setMode("offline");
+
+          // load into active panel
           useChartStore.setState(s => ({
             panels: { ...s.panels, [activePanelId]: { ...s.panels[activePanelId], symbol: sym, timeframe: tf } },
           }));
+
+          // add to watchlist (persisted)
+          useChartStore.getState().addToWatchlist({
+            id: `local:${sym}:${tf}`,
+            symbol: sym,
+            label: sym,
+            tfDefault: tf,
+            source: "local",
+          });
+
 
           alert(`Imported ${bars.length} bars into ${sym} (${tf}). Loaded into active chart.`);
         } finally {
