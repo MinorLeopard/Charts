@@ -13,3 +13,27 @@ __pycache__/
 # app data
 /.data/
 *.csv
+# dependencies
+node_modules/
+.pnp.* 
+
+# build outputs
+.next/
+dist/
+out/
+coverage/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# vercel
+.vercel/
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*

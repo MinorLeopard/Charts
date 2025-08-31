@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { mountLwc, type LwcAdapter, type OHLC } from "@/lib/chart/lwcAdaptor";
 import { useChartStore } from "@/store/chartStore";
 import { fetchSeries } from "@/lib/data/fetchers";
@@ -8,15 +8,14 @@ import { Maximize2, Minimize2 } from "lucide-react";
 import { CrosshairMode } from "lightweight-charts";
 import type {
   MouseEventParams,
-  SeriesDataItemTypeMap,
   UTCTimestamp,
 } from "lightweight-charts";
+import DrawingOverlay from "./DrawingOverlay";
 import type { CandlestickData, Time } from "lightweight-charts";
 
 interface CandlestickWithVol extends CandlestickData<Time> {
   volume?: number;
 }
-
 
 type PriceRange = { from: number; to: number };
 
@@ -53,6 +52,15 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
   const maximizedPanelId = useChartStore((s) => s.maximizedPanelId);
   const toggleMaximize = useChartStore((s) => s.toggleMaximize);
   const isMaximized = maximizedPanelId === panelId;
+
+  // ⬅️ read current layout so drawings can be isolated per-layout+panel
+  const layout = useChartStore((s) => s.layout ?? "1x1");
+
+  // a stable, per-canvas id (layout:panelId) so drawings don’t bleed across other charts/layouts
+  const viewIdRef = useRef<string>(`${layout}:${panelId}`);
+  if (!viewIdRef.current.startsWith(layout)) {
+    viewIdRef.current = `${layout}:${panelId}`;
+  }
 
   const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api/mock";
   const fallbackDemo = BASE.includes("/api/mock") || mode === "online";
@@ -145,14 +153,11 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
         v: first.volume,
         time: param.time as UTCTimestamp,
       });
-
     };
 
     api.chart.subscribeCrosshairMove(onMove);
     return () => api.chart.unsubscribeCrosshairMove(onMove);
   }, [api]);
-
-
 
   // ===== Vertical pan (Shift + drag) =====
   const drag = useRef<{ active: boolean; startY: number; startRange: PriceRange | null; height: number } | null>(null);
@@ -255,6 +260,12 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     return () => el.removeEventListener("wheel", onWheel);
   }, [api]);
 
+  const header = useMemo(() => {
+    const s = panel.symbol ?? (fallbackDemo ? "DEMO" : "—");
+    const tfStr = panel.timeframe ?? "1m";
+    return `${s} · ${tfStr}`;
+  }, [panel.symbol, panel.timeframe, fallbackDemo]);
+
   return (
     <div
       className={`relative w-full h-full min-h-[320px] rounded-md 
@@ -268,7 +279,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     >
       {/* top-left header */}
       <div className="absolute left-2 top-1 z-20 text-xs flex items-center gap-3" style={{ height: PANEL_HEADER_PX }}>
-        <span className="font-semibold">{panel.symbol ?? (fallbackDemo ? "DEMO" : "—")}</span>
+        <span className="font-semibold">{header}</span>
         {ohlc && (
           <>
             <span>{formatTime(ohlc.time)}</span>
@@ -295,7 +306,17 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
         </button>
       </div>
 
-      <div ref={hostRef} className="absolute inset-0" style={{ paddingTop: PANEL_HEADER_PX }} />
+      {/* chart host (z-0 so overlay sits above) */}
+      <div ref={hostRef} className="absolute inset-0 z-0" style={{ paddingTop: PANEL_HEADER_PX }} />
+
+      {/* overlay gets a per-layout viewId */}
+      {api && (
+        <DrawingOverlay
+          api={api}
+          viewId={viewIdRef.current}
+          symbol={panel.symbol ?? (fallbackDemo ? "DEMO" : undefined)}
+        />
+      )}
 
       {status !== "ready" && (
         <div className="absolute inset-0 flex items-center justify-center" style={{ paddingTop: PANEL_HEADER_PX }}>
