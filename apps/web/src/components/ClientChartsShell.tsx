@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import ModeToggle from "@/components/ModeToggle";
 import CsvImportDialog from "@/components/CsvImportDialog";
 import Toolbar from "@/components/Toolbar";
+import IndicatorsDialog from "@/components/IndicatorsDialog";
 // these are client-only
 const PanelsGrid = dynamic(() => import("@/components/PanelsGrid"), { ssr: false });
 const LayoutSwitcher = dynamic(() => import("@/components/LayoutSwitcher"), { ssr: false });
@@ -18,6 +19,7 @@ export default function ClientChartsShell() {
           <div className="flex items-center gap-3">
             <ModeToggle />
             <LayoutSwitcher />
+            <IndicatorsDialog />
           </div>
           <CsvImportDialog />
         </div>
