@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { mountLwc, type LwcAdapter, type OHLC } from "@/lib/chart/lwcAdaptor";
 import { useChartStore } from "@/store/chartStore";
 import { fetchSeries } from "@/lib/data/fetchers";
@@ -11,6 +11,7 @@ import {
   LineSeries,
   type ISeriesApi,
   type LineData,
+  type MouseEventParams,
   type SeriesDataItemTypeMap,
   type Time,
   type UTCTimestamp,
@@ -22,7 +23,6 @@ import { useIndicatorStore, type IndicatorId } from "@/store/indicatorStore";
 interface CandlestickWithVol extends CandlestickData<Time> {
   volume?: number;
 }
-
 type PriceRange = { from: number; to: number };
 
 const PANEL_HEADER_PX = 24;
@@ -35,7 +35,6 @@ function formatVol(v: number | undefined) {
   if (v >= 1_000) return (v / 1_000).toFixed(1) + "K";
   return v.toString();
 }
-
 function formatTime(ts?: number) {
   if (!ts) return "";
   const d = new Date(ts * 1000);
@@ -61,16 +60,16 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
   // indicators selected for this "view"
   const layout = useChartStore((s) => s.layout);
   const viewId = `${layout}:${panelId}`;
-  const selectedIndicators: IndicatorId[] = useIndicatorStore((s) => s.list(viewId));
+  const selectedIndicators = useIndicatorStore(
+    useCallback((s) => s.list(viewId), [viewId])
+  ) as IndicatorId[];
 
   const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api/mock";
   const fallbackDemo = BASE.includes("/api/mock") || mode === "online";
   const effectiveSymbol = panel.symbol ?? (fallbackDemo ? "DEMO" : undefined);
   const tf = panel.timeframe;
 
-  // =========================
   // mount/unmount chart
-  // =========================
   useEffect(() => {
     if (!hostRef.current) return;
     const a = mountLwc(hostRef.current);
@@ -95,11 +94,8 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     return () => a.chart.remove();
   }, []);
 
-  // =========================
   // load data
-  // =========================
   const barsRef = useRef<OHLC[] | null>(null);
-
   useEffect(() => {
     if (!api) return;
     if (!effectiveSymbol) {
@@ -138,41 +134,46 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     };
   }, [api, mode, effectiveSymbol, tf]);
 
-  // =========================
   // crosshair header
-  // =========================
   useEffect(() => {
     if (!api) return;
 
-    const onMove = (param: { time?: Time; seriesData?: Map<unknown, SeriesDataItemTypeMap["Candlestick"]> }) => {
-      if (!param?.time || !param?.seriesData || param.seriesData.size === 0) {
+    const onMove = (param: MouseEventParams<Time>) => {
+      const t = param.time;
+      if (typeof t !== "number" || !param.seriesData || param.seriesData.size === 0) {
         setOhlc(null);
         return;
       }
-      const first = Array.from(param.seriesData.values())[0] as CandlestickWithVol;
-      if (!first || typeof first.open !== "number") {
+
+      // The map value is (WhitespaceData | CandlestickData). Narrow first:
+      const firstAny = Array.from(param.seriesData.values())[0];
+
+      if (!firstAny || typeof firstAny !== "object" || !("open" in firstAny)) {
+        // It's whitespace (no bar at that point)
         setOhlc(null);
         return;
       }
+
+      // Now it's safe to treat as candle (optionally carrying volume)
+      const first = firstAny as CandlestickData<Time> & { volume?: number };
+
       setOhlc({
         o: first.open,
         h: first.high,
         l: first.low,
         c: first.close,
         v: first.volume,
-        time: (param.time as UTCTimestamp),
+        time: t as UTCTimestamp,
       });
     };
 
-    api.chart.subscribeCrosshairMove(onMove as any);
-    return () => api.chart.unsubscribeCrosshairMove(onMove as any);
+    api.chart.subscribeCrosshairMove(onMove);
+    return () => api.chart.unsubscribeCrosshairMove(onMove);
   }, [api]);
 
-  // =========================
-  // vertical pan with Shift+drag
-  // =========================
-  const drag = useRef<{ active: boolean; startY: number; startRange: PriceRange | null; height: number } | null>(null);
 
+  // vertical pan with Shift+drag
+  const drag = useRef<{ active: boolean; startY: number; startRange: PriceRange | null; height: number } | null>(null);
   const onMouseDown = (e: React.MouseEvent) => {
     setActivePanel(panelId);
     if (!e.shiftKey || !api || !hostRef.current) return;
@@ -186,19 +187,16 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     };
     e.preventDefault();
   };
-
   const onMouseMove = (e: React.MouseEvent) => {
     if (!drag.current?.active || !api) return;
     const ps = api.chart.priceScale("right");
     ps.setAutoScale(false);
     const base = drag.current.startRange ?? ps.getVisibleRange();
     if (!base) return;
-
     const dy = e.clientY - drag.current.startY;
     const pricePerPx = (base.to - base.from) / Math.max(1, drag.current.height);
     ps.setVisibleRange({ from: base.from + dy * pricePerPx, to: base.to + dy * pricePerPx });
   };
-
   const onMouseUp = () => {
     if (drag.current) drag.current.active = false;
   };
@@ -207,9 +205,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     api?.chart.priceScale("right").setAutoScale(true);
   };
 
-  // =========================
   // wheel zoom on axes only
-  // =========================
   useEffect(() => {
     if (!api || !hostRef.current) return;
     const el = hostRef.current;
@@ -222,7 +218,6 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       const overPriceAxis = x > rect.width - PRICE_AXIS_W;
       const overTimeAxis = y > rect.height - TIME_AXIS_H;
 
-      // PRICE AXIS → price zoom
       if (overPriceAxis) {
         e.preventDefault();
         e.stopPropagation();
@@ -245,7 +240,6 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
         return;
       }
 
-      // TIME AXIS → time zoom
       if (overTimeAxis) {
         e.preventDefault();
         e.stopPropagation();
@@ -266,52 +260,56 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
         ts.setVisibleLogicalRange({ from: newFrom, to: newTo });
         return;
       }
-      // else: default scroll (time navigation)
+      // default: time scroll
     };
 
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [api]);
 
-  // =========================
-  // Indicators (compute + render)
-  // =========================
+  // ===== Indicators (compute + render) =====
 
-  // series refs
   type AnySeries = ISeriesApi<"Line"> | ISeriesApi<"Histogram">;
   const overlaySeriesRef = useRef<Record<string, AnySeries | undefined>>({});
 
-  // helpers to create/fetch line/hist series on a given priceScale
-  const ensureLine = (key: string, color: string, priceScaleId: string) => {
-    let s = overlaySeriesRef.current[key] as ISeriesApi<"Line"> | undefined;
-    if (!s && api) {
-      s = api.chart.addSeries(LineSeries, {
-        priceScaleId,
-        color,
-        lineWidth: 1,
-      });
-      overlaySeriesRef.current[key] = s;
-    }
-    return s as ISeriesApi<"Line"> | undefined;
-  };
+  const ensureLine = useCallback(
+    (key: string, color: string, priceScaleId: string) => {
+      let s = overlaySeriesRef.current[key] as ISeriesApi<"Line"> | undefined;
+      if (!s && api) {
+        s = api.chart.addSeries(LineSeries, {
+          priceScaleId,
+          color,
+          lineWidth: 1,
+        });
+        overlaySeriesRef.current[key] = s;
+      }
+      return s as ISeriesApi<"Line"> | undefined;
+    },
+    [api]
+  );
 
-  const ensureHist = (key: string, priceScaleId: string) => {
-    let s = overlaySeriesRef.current[key] as ISeriesApi<"Histogram"> | undefined;
-    if (!s && api) {
-      s = api.chart.addSeries(HistogramSeries, {
-        priceScaleId,
-        priceFormat: { type: "volume" },
-      });
-      overlaySeriesRef.current[key] = s;
-    }
-    return s as ISeriesApi<"Histogram"> | undefined;
-  };
+  const ensureHist = useCallback(
+    (key: string, priceScaleId: string) => {
+      let s = overlaySeriesRef.current[key] as ISeriesApi<"Histogram"> | undefined;
+      if (!s && api) {
+        s = api.chart.addSeries(HistogramSeries, {
+          priceScaleId,
+          priceFormat: { type: "volume" },
+        });
+        overlaySeriesRef.current[key] = s;
+      }
+      return s as ISeriesApi<"Histogram"> | undefined;
+    },
+    [api]
+  );
 
-  // compute fns
-  const toLinePoints = (arr: { time: number; value: number }[]): LineData<Time>[] =>
-    arr.map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value }));
+  const toLinePoints = useCallback(
+    (arr: { time: number; value: number }[]): LineData<Time>[] =>
+      arr.map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value })),
+    []
+  );
 
-  const computeSMA = (bars: OHLC[], period = 20) => {
+  const computeSMA = useCallback((bars: OHLC[], period = 20) => {
     const out: { time: number; value: number }[] = [];
     let sum = 0;
     const q: number[] = [];
@@ -322,9 +320,9 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       if (q.length === period) out.push({ time: b.t, value: sum / period });
     }
     return out;
-  };
+  }, []);
 
-  const computeEMA = (bars: OHLC[], period = 20) => {
+  const computeEMA = useCallback((bars: OHLC[], period = 20) => {
     const out: { time: number; value: number }[] = [];
     const k = 2 / (period + 1);
     let ema: number | null = null;
@@ -333,9 +331,9 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       out.push({ time: b.t, value: ema });
     }
     return out.slice(period - 1);
-  };
+  }, []);
 
-  const computeBB = (bars: OHLC[], period = 20, mult = 2) => {
+  const computeBB = useCallback((bars: OHLC[], period = 20, mult = 2) => {
     const outMid = computeSMA(bars, period);
     const outUp: { time: number; value: number }[] = [];
     const outDn: { time: number; value: number }[] = [];
@@ -353,9 +351,9 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       }
     }
     return { mid: outMid, up: outUp, dn: outDn };
-  };
+  }, [computeSMA]);
 
-  const computeVWAP = (bars: OHLC[]) => {
+  const computeVWAP = useCallback((bars: OHLC[]) => {
     const out: { time: number; value: number }[] = [];
     let pvSum = 0;
     let vSum = 0;
@@ -366,9 +364,9 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       if (vSum > 0) out.push({ time: b.t, value: pvSum / vSum });
     }
     return out;
-  };
+  }, []);
 
-  const computeRSI = (bars: OHLC[], period = 14) => {
+  const computeRSI = useCallback((bars: OHLC[], period = 14) => {
     const out: { time: number; value: number }[] = [];
     if (bars.length < period + 1) return out;
     let gains = 0;
@@ -391,42 +389,40 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       out.push({ time: bars[i].t, value: 100 - 100 / (1 + rs) });
     }
     return out;
-  };
+  }, []);
 
-  const computeMACD = (bars: OHLC[], fast = 12, slow = 26, signal = 9) => {
-    if (bars.length < slow + signal) return { macd: [] as any[], signal: [] as any[], hist: [] as any[] };
+  type MacdPoint = { time: number; value: number };
+  type MacdResult = { macd: MacdPoint[]; signal: MacdPoint[]; hist: MacdPoint[] };
+  const computeMACD = useCallback((bars: OHLC[], fast = 12, slow = 26, signal = 9): MacdResult => {
+    if (bars.length < slow + signal) return { macd: [], signal: [], hist: [] };
     const emaF = computeEMA(bars, fast);
     const emaS = computeEMA(bars, slow);
-    // align arrays by time
     const mapS = new Map<number, number>();
     for (const p of emaS) mapS.set(p.time, p.value);
-    const macd = [];
+    const macd: MacdPoint[] = [];
     for (const p of emaF) {
       const sv = mapS.get(p.time);
       if (sv != null) macd.push({ time: p.time, value: p.value - sv });
     }
-    // signal EMA on macd line
     const k = 2 / (signal + 1);
-    const sig: { time: number; value: number }[] = [];
+    const sig: MacdPoint[] = [];
     let sVal: number | null = null;
     for (const p of macd) {
-      sVal = sVal == null ? p.value : p.value * k + sVal * (1 - k);
+      sVal = sVal == null ? p.value : p.value * k + (sVal as number) * (1 - k);
       sig.push({ time: p.time, value: sVal });
     }
-    // hist = macd - signal (same time base)
-    const hist = macd.map((p, i) => {
+    const hist: MacdPoint[] = macd.map((p, i) => {
       const sv = sig[i]?.value ?? 0;
       return { time: p.time, value: p.value - sv };
     });
     return { macd, signal: sig, hist };
-  };
+  }, [computeEMA]);
 
-  // render indicators when selection or data changes
+  // render indicators whenever selection or data changes
   useEffect(() => {
     if (!api) return;
     const bars = barsRef.current ?? [];
 
-    // clear everything if no bars
     if (bars.length === 0) {
       for (const k of Object.keys(overlaySeriesRef.current)) {
         overlaySeriesRef.current[k]?.setData([]);
@@ -436,19 +432,16 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
 
     const has = (id: IndicatorId) => selectedIndicators.includes(id);
 
-    // ----- Ensure sub-scale series exist before touching their price scales -----
+    // Ensure RSI/MACD series exist before setting their priceScale margins
     const showRSI = has("rsi");
     const showMACD = has("macd");
-    if (showRSI) {
-      ensureLine("rsi", "#ff7eb6", "rsi");
-    }
+    if (showRSI) ensureLine("rsi", "#ff7eb6", "rsi");
     if (showMACD) {
       ensureLine("macdLine", "#2ecc71", "macd");
       ensureLine("macdSignal", "#e74c3c", "macd");
       ensureHist("macdHist", "macd");
     }
 
-    // ----- Now it's safe to apply sub-scale margins -----
     if (showRSI && showMACD) {
       api.chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.55, bottom: 0.25 } });
       api.chart.priceScale("macd").applyOptions({ scaleMargins: { top: 0.80, bottom: 0.02 } });
@@ -458,27 +451,21 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       api.chart.priceScale("macd").applyOptions({ scaleMargins: { top: 0.70, bottom: 0.02 } });
     }
 
-    // ---- overlays on main price scale (right) ----
+    // overlays
     if (has("sma")) {
       const s = ensureLine("sma", "#f2c94c", "right");
       s?.setData(toLinePoints(computeSMA(bars, 20)));
-    } else {
-      overlaySeriesRef.current["sma"]?.setData([]);
-    }
+    } else overlaySeriesRef.current["sma"]?.setData([]);
 
     if (has("ema")) {
       const s = ensureLine("ema", "#56ccf2", "right");
       s?.setData(toLinePoints(computeEMA(bars, 20)));
-    } else {
-      overlaySeriesRef.current["ema"]?.setData([]);
-    }
+    } else overlaySeriesRef.current["ema"]?.setData([]);
 
     if (has("vwap")) {
       const s = ensureLine("vwap", "#9b51e0", "right");
       s?.setData(toLinePoints(computeVWAP(bars)));
-    } else {
-      overlaySeriesRef.current["vwap"]?.setData([]);
-    }
+    } else overlaySeriesRef.current["vwap"]?.setData([]);
 
     if (has("bb")) {
       const { mid, up, dn } = computeBB(bars, 20, 2);
@@ -494,12 +481,11 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       overlaySeriesRef.current["bbDn"]?.setData([]);
     }
 
-    // ---- RSI sub-scale ----
+    // RSI sub-scale
     if (showRSI) {
       const rsiLine = ensureLine("rsi", "#ff7eb6", "rsi");
       const rsi = computeRSI(bars, 14);
       rsiLine?.setData(toLinePoints(rsi));
-      // lock RSI to 0..100
       const ps = api.chart.priceScale("rsi");
       ps.setAutoScale(false);
       ps.setVisibleRange({ from: 0, to: 100 });
@@ -507,7 +493,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       overlaySeriesRef.current["rsi"]?.setData([]);
     }
 
-    // ---- MACD sub-scale ----
+    // MACD sub-scale
     if (showMACD) {
       const m = ensureLine("macdLine", "#2ecc71", "macd");
       const s = ensureLine("macdSignal", "#e74c3c", "macd");
@@ -529,7 +515,19 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       overlaySeriesRef.current["macdSignal"]?.setData([]);
       overlaySeriesRef.current["macdHist"]?.setData([]);
     }
-  }, [api, selectedIndicators]);
+  }, [
+    api,
+    selectedIndicators,
+    ensureLine,
+    ensureHist,
+    computeSMA,
+    computeEMA,
+    computeBB,
+    computeVWAP,
+    computeRSI,
+    computeMACD,
+    toLinePoints,
+  ]);
 
   return (
     <div
