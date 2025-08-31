@@ -41,7 +41,7 @@ export default function DrawingOverlay({
 
   // Only render objects for this panel
   const objects = useMemo(
-    () => objectsAll.filter((o) => o.viewId?.endsWith(panelId) || (o as any).panelId === panelId),
+    () => objectsAll.filter((o) => o.viewId?.endsWith(panelId)),
     [objectsAll, panelId]
   );
 
