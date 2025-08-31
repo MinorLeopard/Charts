@@ -11,6 +11,7 @@ import type {
   SeriesDataItemTypeMap,
   UTCTimestamp,
 } from "lightweight-charts";
+import DrawingOverlay from "./DrawingOverlay";
 import type { CandlestickData, Time } from "lightweight-charts";
 
 interface CandlestickWithVol extends CandlestickData<Time> {
@@ -296,6 +297,14 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       </div>
 
       <div ref={hostRef} className="absolute inset-0" style={{ paddingTop: PANEL_HEADER_PX }} />
+
+      {api && (
+        <DrawingOverlay
+          api={api}
+          panelId={panelId}
+          symbol={panel.symbol ?? (fallbackDemo ? "DEMO" : undefined)}
+        />
+      )}
 
       {status !== "ready" && (
         <div className="absolute inset-0 flex items-center justify-center" style={{ paddingTop: PANEL_HEADER_PX }}>
