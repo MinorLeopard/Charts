@@ -4,18 +4,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { LwcAdapter } from "@/lib/chart/lwcAdaptor";
 import { useDrawStore, type DrawObject, type Point } from "@/store/drawStore";
 import { nanoid } from "nanoid";
+import type {
+  BusinessDay,
+  MouseEventParams,
+  Time,
+  UTCTimestamp,
+} from "lightweight-charts";
 
-type PanelId = "p1" | "p2" | "p3" | "p4";
-
-export default function DrawingOverlay({
-  api,
-  panelId,
-  symbol,
-}: {
+type Props = {
   api: LwcAdapter | null;
-  panelId: PanelId;
+  viewId: string; // layout:panelId to isolate drawings per chart & layout
   symbol?: string;
-}) {
+};
+
+export default function DrawingOverlay({ api, viewId }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
 
@@ -24,17 +26,34 @@ export default function DrawingOverlay({
   const addObject = useDrawStore((s) => s.addObject);
   const deleteObj = useDrawStore((s) => s.deleteObject);
 
+  // Only show objects for this view
   const objects = useMemo(
-    () => objectsAll.filter((o) => o.panelId === panelId),
-    [objectsAll, panelId]
+    () => objectsAll.filter((o) => o.viewId === viewId),
+    [objectsAll, viewId]
   );
 
   const [draft, setDraft] = useState<DrawObject | null>(null);
 
+  // ---- helpers ----
   const priceToY = (price: number): number => api?.priceToCoord(price) ?? 0;
-  const timeToX = (time: number): number | null => {
+
+  // coordinateToTime returns Time | null; accept number/BusinessDay/string
+  const toEpochSeconds = (t: Time | null): number | null => {
+    if (t == null) return null;
+    if (typeof t === "number") return t as number; // UTCTimestamp
+    if (typeof t === "string") {
+      const d = new Date(t);
+      if (Number.isNaN(d.getTime())) return null;
+      return Math.floor(d.getTime() / 1000);
+    }
+    const bd = t as BusinessDay;
+    return Math.floor(Date.UTC(bd.year, bd.month - 1, bd.day) / 1000);
+  };
+
+  const timeToX = (timeSec: number): number | null => {
     if (!api) return null;
-    const x = api.chart.timeScale().timeToCoordinate(time as any);
+    // LWC accepts UTCTimestamp or BusinessDay; our data uses epoch seconds
+    const x = api.chart.timeScale().timeToCoordinate(timeSec as UTCTimestamp);
     return typeof x === "number" ? x : null;
   };
 
@@ -100,12 +119,22 @@ export default function DrawingOverlay({
         ctx.stroke();
       };
 
-      const drawRect = (a: Point, b: Point, stroke = "#6aa3ff", fill = "rgba(106,163,255,0.12)", lw = 1) => {
-        const Ax = timeToX(a.time), Bx = timeToX(b.time);
+      const drawRect = (
+        a: Point,
+        b: Point,
+        stroke = "#6aa3ff",
+        fill = "rgba(106,163,255,0.12)",
+        lw = 1
+      ) => {
+        const Ax = timeToX(a.time),
+          Bx = timeToX(b.time);
         if (Ax == null || Bx == null) return;
-        const Ay = priceToY(a.price), By = priceToY(b.price);
-        const x = Math.min(Ax, Bx), y = Math.min(Ay, By);
-        const w = Math.abs(Bx - Ax), h = Math.abs(By - Ay);
+        const Ay = priceToY(a.price),
+          By = priceToY(b.price);
+        const x = Math.min(Ax, Bx),
+          y = Math.min(Ay, By);
+        const w = Math.abs(Bx - Ax),
+          h = Math.abs(By - Ay);
         if (w < 1 || h < 1) return;
         ctx.lineWidth = lw;
         ctx.strokeStyle = stroke;
@@ -118,33 +147,61 @@ export default function DrawingOverlay({
 
       // existing objects
       for (const o of objects) {
-        if (o.type === "trendline") drawLine(o.a, o.b, o.color ?? "#6aa3ff", o.width ?? 1.5);
-        if (o.type === "hline")     drawHLine(o.y, o.color ?? "#8aa", o.width ?? 1);
-        if (o.type === "vline")     drawVLine(o.x, o.color ?? "#8aa", o.width ?? 1);
-        if (o.type === "rect")      drawRect(o.a, o.b, o.color ?? "#6aa3ff", o.fill ?? "rgba(106,163,255,0.12)", o.width ?? 1);
+        if (o.type === "trendline")
+          drawLine(o.a, o.b, o.color ?? "#6aa3ff", o.width ?? 1.5);
+        if (o.type === "hline") drawHLine(o.y, o.color ?? "#8aa", o.width ?? 1);
+        if (o.type === "vline") drawVLine(o.x, o.color ?? "#8aa", o.width ?? 1);
+        if (o.type === "rect")
+          drawRect(
+            o.a,
+            o.b,
+            o.color ?? "#6aa3ff",
+            o.fill ?? "rgba(106,163,255,0.12)",
+            o.width ?? 1
+          );
       }
 
-      // draft (dashed border for lines; faint fill for rect)
+      // draft (dashed preview)
       if (draft) {
         if (draft.type === "trendline") {
-          ctx.setLineDash([4, 3]); drawLine(draft.a, draft.b, "#aaa", 1); ctx.setLineDash([]);
+          ctx.setLineDash([4, 3]);
+          drawLine(draft.a, draft.b, "#aaa", 1);
+          ctx.setLineDash([]);
         }
-        if (draft.type === "hline")     { ctx.setLineDash([4,3]); drawHLine(draft.y, "#aaa", 1); ctx.setLineDash([]); }
-        if (draft.type === "vline")     { ctx.setLineDash([4,3]); drawVLine(draft.x, "#aaa", 1); ctx.setLineDash([]); }
-        if (draft.type === "rect")      { drawRect(draft.a, draft.b, "#aaa", "rgba(170,170,170,0.12)", 1); }
+        if (draft.type === "hline") {
+          ctx.setLineDash([4, 3]);
+          drawHLine(draft.y, "#aaa", 1);
+          ctx.setLineDash([]);
+        }
+        if (draft.type === "vline") {
+          ctx.setLineDash([4, 3]);
+          drawVLine(draft.x, "#aaa", 1);
+          ctx.setLineDash([]);
+        }
+        if (draft.type === "rect") {
+          drawRect(draft.a, draft.b, "#aaa", "rgba(170,170,170,0.12)", 1);
+        }
       }
 
       ctx.restore();
     };
 
     const ts = api.chart.timeScale();
+
     const onTimeRange = () => paint();
     const onLogicalRange = () => paint();
-    const onCrosshairMove = () => paint();
+    const onCrosshairMove = (_: MouseEventParams) => paint();
 
     ts.subscribeVisibleTimeRangeChange(onTimeRange);
-    (ts as any).subscribeVisibleLogicalRangeChange?.(onLogicalRange);
-    api.chart.subscribeCrosshairMove(onCrosshairMove as any);
+
+    // Some lightweight-charts versions don’t ship typings for these:
+    const tsShim = ts as unknown as {
+      subscribeVisibleLogicalRangeChange?: (cb: () => void) => void;
+      unsubscribeVisibleLogicalRangeChange?: (cb: () => void) => void;
+    };
+    tsShim.subscribeVisibleLogicalRangeChange?.(onLogicalRange);
+
+    api.chart.subscribeCrosshairMove(onCrosshairMove);
 
     const ro = new ResizeObserver(() => paint());
     ro.observe(host);
@@ -152,9 +209,9 @@ export default function DrawingOverlay({
     paint();
 
     return () => {
-      api.chart.unsubscribeCrosshairMove(onCrosshairMove as any);
+      api.chart.unsubscribeCrosshairMove(onCrosshairMove);
       ts.unsubscribeVisibleTimeRangeChange(onTimeRange);
-      (ts as any).unsubscribeVisibleLogicalRangeChange?.(onLogicalRange);
+      tsShim.unsubscribeVisibleLogicalRangeChange?.(onLogicalRange);
       ro.disconnect();
     };
   }, [api, objects, draft]);
@@ -165,10 +222,11 @@ export default function DrawingOverlay({
     const x = clientX - rect.left;
     const y = clientY - rect.top;
 
-    const time = api.chart.timeScale().coordinateToTime(x as any);
+    const t: Time | null = api.chart.timeScale().coordinateToTime(x);
+    const time = toEpochSeconds(t);
     const price = api.coordToPrice(y);
     if (time == null || price == null) return null;
-    return { time: Number(time), price };
+    return { time, price };
   };
 
   const onMouseDown: React.MouseEventHandler<HTMLDivElement> = (e) => {
@@ -197,24 +255,34 @@ export default function DrawingOverlay({
           return x != null && Math.abs(Px - x) <= tol;
         }
         if (o.type === "trendline") {
-          const Ax = timeToX(o.a.time); const Bx = timeToX(o.b.time);
+          const Ax = timeToX(o.a.time);
+          const Bx = timeToX(o.b.time);
           if (Ax == null || Bx == null) return false;
-          const Ay = priceToY(o.a.price); const By = priceToY(o.b.price);
-          const vx = Bx - Ax, vy = By - Ay;
-          const wx = Px - Ax, wy = Py - Ay;
-          const c1 = vx * wx + vy * wy; const c2 = vx * vx + vy * vy;
-          let t = c2 ? c1 / c2 : 0; t = Math.max(0, Math.min(1, t));
-          const nx = Ax + t * vx, ny = Ay + t * vy;
+          const Ay = priceToY(o.a.price);
+          const By = priceToY(o.b.price);
+          const vx = Bx - Ax,
+            vy = By - Ay;
+          const wx = Px - Ax,
+            wy = Py - Ay;
+          const c1 = vx * wx + vy * wy;
+          const c2 = vx * vx + vy * vy;
+          let t = c2 ? c1 / c2 : 0;
+          t = Math.max(0, Math.min(1, t));
+          const nx = Ax + t * vx,
+            ny = Ay + t * vy;
           const dist = Math.hypot(Px - nx, Py - ny);
           return dist <= tol;
         }
         if (o.type === "rect") {
-          const Ax = timeToX(o.a.time), Bx = timeToX(o.b.time);
+          const Ax = timeToX(o.a.time),
+            Bx = timeToX(o.b.time);
           if (Ax == null || Bx == null) return false;
-          const Ay = priceToY(o.a.price), By = priceToY(o.b.price);
-          const x1 = Math.min(Ax, Bx), x2 = Math.max(Ax, Bx);
-          const y1 = Math.min(Ay, By), y2 = Math.max(Ay, By);
-          // treat inside-rect click as a hit (MVP)
+          const Ay = priceToY(o.a.price),
+            By = priceToY(o.b.price);
+          const x1 = Math.min(Ax, Bx),
+            x2 = Math.max(Ax, Bx);
+          const y1 = Math.min(Ay, By),
+            y2 = Math.max(Ay, By);
           return Px >= x1 && Px <= x2 && Py >= y1 && Py <= y2;
         }
         return false;
@@ -225,23 +293,21 @@ export default function DrawingOverlay({
       return;
     }
 
+    // start drafts
     if (activeTool === "hline") {
-      setDraft({ id: "draft", type: "hline", panelId, y: p.price });
+      setDraft({ id: "draft", viewId, type: "hline", y: p.price });
       return;
     }
-
     if (activeTool === "vline") {
-      setDraft({ id: "draft", type: "vline", panelId, x: p.time });
+      setDraft({ id: "draft", viewId, type: "vline", x: p.time });
       return;
     }
-
     if (activeTool === "rect") {
-      setDraft({ id: "draft", type: "rect", panelId, a: p, b: p });
+      setDraft({ id: "draft", viewId, type: "rect", a: p, b: p });
       return;
     }
-
     if (activeTool === "trendline") {
-      setDraft({ id: "draft", type: "trendline", panelId, a: p, b: p });
+      setDraft({ id: "draft", viewId, type: "trendline", a: p, b: p });
       return;
     }
   };
@@ -252,9 +318,9 @@ export default function DrawingOverlay({
     if (!p) return;
 
     if (draft.type === "trendline") setDraft({ ...draft, b: p });
-    if (draft.type === "hline")     setDraft({ ...draft, y: p.price });
-    if (draft.type === "vline")     setDraft({ ...draft, x: p.time });
-    if (draft.type === "rect")      setDraft({ ...draft, b: p });
+    if (draft.type === "hline") setDraft({ ...draft, y: p.price });
+    if (draft.type === "vline") setDraft({ ...draft, x: p.time });
+    if (draft.type === "rect") setDraft({ ...draft, b: p });
   };
 
   const onMouseUp: React.MouseEventHandler<HTMLDivElement> = () => {
@@ -264,17 +330,22 @@ export default function DrawingOverlay({
       if (draft.a.time !== draft.b.time || draft.a.price !== draft.b.price) {
         addObject({ ...draft, id: nanoid(), color: "#6aa3ff", width: 1.5 });
       }
-    }
-    if (draft.type === "hline") {
+    } else if (draft.type === "hline") {
       addObject({ ...draft, id: nanoid(), color: "#8aa", width: 1 });
-    }
-    if (draft.type === "vline") {
+    } else if (draft.type === "vline") {
       addObject({ ...draft, id: nanoid(), color: "#8aa", width: 1 });
-    }
-    if (draft.type === "rect") {
-      // only add if area is meaningful
-      if (Math.abs(draft.a.time - draft.b.time) > 0 && Math.abs(draft.a.price - draft.b.price) > 0) {
-        addObject({ ...draft, id: nanoid(), color: "#6aa3ff", fill: "rgba(106,163,255,0.12)", width: 1 });
+    } else if (draft.type === "rect") {
+      if (
+        Math.abs(draft.a.time - draft.b.time) > 0 &&
+        Math.abs(draft.a.price - draft.b.price) > 0
+      ) {
+        addObject({
+          ...draft,
+          id: nanoid(),
+          color: "#6aa3ff",
+          fill: "rgba(106,163,255,0.12)",
+          width: 1,
+        });
       }
     }
 
