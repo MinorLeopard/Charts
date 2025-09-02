@@ -3,28 +3,24 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useAttachmentsStore } from "@/store/attachmentsStore";
-import { useIndicatorOverlayStore } from "@/store/indicatorOverlayStore"; // ⬅️ NEW: direct overlay write fallback
+import type { PlotAdapter } from "@/store/plotRegistryStore";
 
 // Lazy-load Monaco
 const Monaco = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 
-export type PlotAdapter = {
-  line: (id: string, series: { time: number; value: number }[], opts?: Record<string, unknown>) => void;
-  bands: (
-    id: string,
-    series: { time: number; upper: number; basis: number; lower: number }[],
-    opts?: Record<string, unknown>
-  ) => void;
-  histogram: (id: string, series: { time: number; value: number }[], opts?: Record<string, unknown>) => void;
-  boxes: (
-    id: string,
-    boxes: { from: number; to: number; top: number; bottom: number }[],
-    opts?: Record<string, unknown>
-  ) => void;
-  labels: (id: string, labels: { time: number; price: number; text?: string; color?: string }[]) => void; // ⬅️ NEW
+// near the top with other types
+type Label = {
+  time: number;              // ms epoch or seconds? keep consistent with your usage (you used ms)
+  price: number;
+  text?: string;             // optional in editor API
+  color?: string;            // text color
+  bg?: string;               // background fill
+  align?: "above" | "below"; // your overlay supports these
 };
+
+
 
 export type EditorRunnerPanelProps = {
   viewId: string;
@@ -135,7 +131,7 @@ function createRunnerWorker(): Worker {
           bands: (id, series, opts) => rpc('plot:bands', { id, series, opts }),
           histogram: (id, series, opts) => rpc('plot:histogram', { id, series, opts }),
           boxes: (id, boxes, opts) => rpc('plot:boxes', { id, boxes, opts }),
-          labels: (id, labels) => rpc('plot:labels', { id, labels }), 
+          labels: (id, labels, opts) => rpc('plot:labels', { id, labels, opts }),   // NEW: labels
         },
         attachments: {
           list: () => rpc('attachments:list', {}),
@@ -160,7 +156,7 @@ function createRunnerWorker(): Worker {
     self.onmessage = async (e) => {
       const msg = e.data;
       if (!msg || msg.type !== 'run') return;
-      const { code, envSpec, timeoutMs = 1000 } = msg;
+      const { code, envSpec, timeoutMs = 250 } = msg;
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
@@ -284,105 +280,64 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
         switch (method) {
           case "getBars": {
             const out = await env.getBars(params?.symbol || env.symbol, params?.timeframe || env.timeframe);
-            console.log("[EditorRunnerPanel] getBars →", out?.length);
             return reply(out);
           }
           case "plot:line": {
-            console.log("[EditorRunnerPanel] plot:line", params?.id, (params?.series || []).length, params?.opts);
-            plots?.line?.(
-              params.id as string,
-              params.series as { time: number; value: number }[],
-              params.opts || {}
-            );
+            plots.line(params.id as string, params.series as { time: number; value: number }[], params.opts || {});
             return reply(true);
           }
           case "plot:bands": {
-            console.log("[EditorRunnerPanel] plot:bands", params?.id, (params?.series || []).length, params?.opts);
-            plots?.bands?.(
+            plots.bands(
               params.id as string,
               params.series as { time: number; upper: number; basis: number; lower: number }[],
               params.opts || {}
             );
             return reply(true);
           }
-          case "plot:labels": {
-  plots?.labels?.(params.id as string, params.labels as any[]);
-  return reply(true);
-}
-
           case "plot:histogram": {
-            console.log("[EditorRunnerPanel] plot:histogram", params?.id, (params?.series || []).length, params?.opts);
-            plots?.histogram?.(
+            plots.histogram(params.id as string, params.series as { time: number; value: number }[], params.opts || {});
+            return reply(true);
+          }
+          case "plot:boxes": {
+            plots.boxes(
               params.id as string,
-              params.series as { time: number; value: number }[],
+              params.boxes as { from: number; to: number; top: number; bottom: number }[],
               params.opts || {}
             );
             return reply(true);
           }
-          case "plot:boxes": {
-  const idStr = params.id as string;
-  const boxesArr = params.boxes as { from: number; to: number; top: number; bottom: number }[];
-  const style = params.opts || {};
-  console.log("[EditorRunnerPanel] plot:boxes", idStr, boxesArr?.length, style);
+          // NEW: labels
+          case "plot:labels": {
+            // params.labels is whatever user code produced (Label[])
+            const raw = (params?.labels || []) as Label[];
 
-  // 1) Try the adapter prop (original route)
-  try {
-    plots?.boxes?.(idStr, boxesArr, style);
-  } catch (e) {
-    console.warn("[EditorRunnerPanel] plots.boxes threw:", e);
-  }
+            // Coerce to the strict IndicatorLabel[] your overlay store expects
+            const safe = raw.map((l) => ({
+              time: l.time,                        // keep your unit (ms) consistent with your Drawer usage
+              price: l.price,
+              text: l.text ?? "",                  // <-- make required
+              color: l.color ?? "#ffffff",         // sensible default
+              bg: l.bg ?? "rgba(0,0,0,0.6)",       // sensible default
+              align: l.align ?? "above" as const,  // default alignment
+            }));
 
-  // 2) Fallback: write directly to the overlay store for THIS view
-  try {
-    const { useIndicatorOverlayStore } = await import("@/store/indicatorOverlayStore");
-    useIndicatorOverlayStore.getState().setBoxes(viewId, idStr, boxesArr, style);
-    const snap = useIndicatorOverlayStore.getState().byView[viewId];
-    console.log("[EditorRunnerPanel] overlayStore after setBoxes", viewId, Object.keys(snap || {}));
-  } catch (e) {
-    console.warn("[EditorRunnerPanel] overlayStore.setBoxes threw:", e);
-  }
-
-  // 3) HARD FALLBACK: push rectangles into the MANUAL draw layer (always visible for you)
-  try {
-    const { useDrawStore } = await import("@/store/drawStore");
-    const addObject = useDrawStore.getState().addObject;
-    // convert each box -> manual rect object (seconds + price)
-    for (const b of boxesArr) {
-      addObject({
-        id: `${idStr}-${Math.random().toString(36).slice(2)}`,
-        viewId, // NOTE: must exactly match DrawingOverlay’s viewId: `${layout}:${panelId}`
-        type: "rect",
-        a: { time: Math.floor(b.from / 1000), price: b.top },
-        b: { time: Math.floor(b.to   / 1000), price: b.bottom },
-        color: style.stroke || "rgba(0,153,255,1)",
-        fill: style.fill || "rgba(0,153,255,0.45)",
-        width: Number(style.lineWidth ?? 2),
-      } as any);
-    }
-    console.log("[EditorRunnerPanel] pushed", boxesArr.length, "rect(s) into drawStore");
-  } catch (e) {
-    console.warn("[EditorRunnerPanel] drawStore addObject fallback threw:", e);
-  }
-
-  return reply(true);
-}
+            plots.labels(params.id as string, safe); // opts not used by store, so omit or pass {}
+            return reply(true);
+          }
 
           case "attachments:list": {
             const list = env.listAttachments ? await env.listAttachments() : [];
-            console.log("[EditorRunnerPanel] attachments:list →", list);
             return reply(list);
           }
           case "attachments:csv": {
             if (!env.getCsvAttachment) return reply(undefined, "attachments are not enabled");
             const res = await env.getCsvAttachment(params.name as string);
-            console.log("[EditorRunnerPanel] attachments:csv →", params.name, res?.rows?.length);
             return reply(res);
           }
           default:
             return reply(undefined, `Unknown method: ${String(method)}`);
         }
       } catch (err: any) {
-        console.error("[EditorRunnerPanel] RPC error:", err);
         return reply(undefined, String(err?.message || err));
       }
     };
@@ -391,19 +346,19 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
     return () => {
       w.removeEventListener("message", onMessage);
     };
-  }, [getActiveChartEnv, plots, viewId]);
+  }, [getActiveChartEnv, plots]);
 
   const runOnActive = useCallback(() => {
     const w = workerRef.current;
     if (!w) return;
     setRunning(true);
     const env = getActiveChartEnv();
-    setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ▶ Running on ${env.symbol}, ${env.timeframe}…`].slice(-400));
+    setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ▶ Running on ${env.symbol} (${env.timeframe})…`].slice(-400));
     w.postMessage({
       type: "run",
       code,
       envSpec: { symbol: env.symbol, timeframe: env.timeframe },
-      timeoutMs: 1000,
+      timeoutMs: 250,
     });
   }, [code, getActiveChartEnv]);
 
@@ -422,9 +377,7 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
       const pct = Math.max(20, Math.min(80, (y / rect.height) * 100));
       setHeightPct(pct);
     };
-    const stop = () => {
-      isDragging.current = false;
-    };
+    const stop = () => { isDragging.current = false; };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", stop);
     return () => {
@@ -440,9 +393,7 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
 
   async function onUploadFiles(files: FileList | null) {
     if (!files) return;
-    for (const f of Array.from(files)) {
-      await attachAdd(f);
-    }
+    for (const f of Array.from(files)) await attachAdd(f);
     await attachRefresh();
     setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] 📎 Attached ${files.length} file(s)`].slice(-400));
   }
@@ -475,21 +426,13 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
             theme="vs-dark"
             value={code}
             onChange={(v) => setCode(v || "")}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 14,
-              tabSize: 2,
-              automaticLayout: true,
-              wordWrap: "on",
-            }}
+            options={{ minimap: { enabled: false }, fontSize: 14, tabSize: 2, automaticLayout: true, wordWrap: "on" }}
           />
         </div>
 
         <div
           className="h-1 cursor-row-resize bg-white/15 hover:bg-white/25"
-          onMouseDown={() => {
-            isDragging.current = true;
-          }}
+          onMouseDown={() => { isDragging.current = true; }}
           title="Drag to resize"
         />
 
@@ -517,16 +460,11 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
           {/* Snippets */}
           {tab === "snippets" && (
             <div className="p-3 grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-              <SnippetCard
-                title="Overlay: BB (20,2)"
-                onUse={() => setCode(DEFAULT_SAMPLE)}
-                onCopy={() => navigator.clipboard.writeText(DEFAULT_SAMPLE)}
-              />
+              <SnippetCard title="Overlay: BB (20,2)" onUse={() => setCode(DEFAULT_SAMPLE)} onCopy={() => navigator.clipboard.writeText(DEFAULT_SAMPLE)} />
               <SnippetCard
                 title="Overlay: SMA(50)"
-                onUse={() =>
-                  setCode(
-                    `module.exports = async (env) => {
+                onUse={() => setCode(
+`module.exports = async (env) => {
   const bars = await env.getBars();
   const closes = bars.map(b => b.close);
   const sma = env.utils.sma(closes, 50);
@@ -534,11 +472,9 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const series = sma.map((v, i) => ({ time: bars[i + offset].time, value: v }));
   await env.plot.line('sma50', series);
 };`
-                  )
-                }
-                onCopy={() =>
-                  navigator.clipboard.writeText(
-                    `module.exports = async (env) => {
+                )}
+                onCopy={() => navigator.clipboard.writeText(
+`module.exports = async (env) => {
   const bars = await env.getBars();
   const closes = bars.map(b => b.close);
   const sma = env.utils.sma(closes, 50);
@@ -546,14 +482,12 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const series = sma.map((v, i) => ({ time: bars[i + offset].time, value: v }));
   await env.plot.line('sma50', series);
 };`
-                  )
-                }
+                )}
               />
               <SnippetCard
                 title="Histogram: RSI(14)"
-                onUse={() =>
-                  setCode(
-                    `module.exports = async (env) => {
+                onUse={() => setCode(
+`module.exports = async (env) => {
   const bars = await env.getBars();
   const closes = bars.map(b => b.close);
   const r = env.utils.rsi(closes, 14);
@@ -561,11 +495,9 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const series = r.map((v, i) => ({ time: bars[i + offset].time, value: v }));
   await env.plot.histogram('rsi14', series);
 };`
-                  )
-                }
-                onCopy={() =>
-                  navigator.clipboard.writeText(
-                    `module.exports = async (env) => {
+                )}
+                onCopy={() => navigator.clipboard.writeText(
+`module.exports = async (env) => {
   const bars = await env.getBars();
   const closes = bars.map(b => b.close);
   const r = env.utils.rsi(closes, 14);
@@ -573,14 +505,12 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const series = r.map((v, i) => ({ time: bars[i + offset].time, value: v }));
   await env.plot.histogram('rsi14', series);
 };`
-                  )
-                }
+                )}
               />
               <SnippetCard
                 title="CSV → Boxes"
-                onUse={() =>
-                  setCode(
-                    `// zones.csv columns: from,to,top,bottom  (times in ms)
+                onUse={() => setCode(
+`// zones.csv columns: from,to,top,bottom  (times in ms)
 module.exports = async (env) => {
   const files = await env.attachments.list();
   if (!files.includes("zones.csv")) throw new Error("Attach zones.csv first");
@@ -591,18 +521,11 @@ module.exports = async (env) => {
     top: Number(r.top),   bottom: Number(r.bottom),
   })).filter(b => Number.isFinite(b.from) && Number.isFinite(b.to));
 
-  await env.plot.boxes("csv-zones", boxes, {
-    fill: "rgba(255,0,0,0.5)",
-    stroke: "rgba(255,0,0,1)",
-    lineWidth: 3,
-    z: 50
-  });
+  await env.plot.boxes("csv-zones", boxes);
 };`
-                  )
-                }
-                onCopy={() =>
-                  navigator.clipboard.writeText(
-                    `// zones.csv columns: from,to,top,bottom  (times in ms)
+                )}
+                onCopy={() => navigator.clipboard.writeText(
+`// zones.csv columns: from,to,top,bottom  (times in ms)
 module.exports = async (env) => {
   const files = await env.attachments.list();
   if (!files.includes("zones.csv")) throw new Error("Attach zones.csv first");
@@ -613,15 +536,94 @@ module.exports = async (env) => {
     top: Number(r.top),   bottom: Number(r.bottom),
   })).filter(b => Number.isFinite(b.from) && Number.isFinite(b.to));
 
-  await env.plot.boxes("csv-zones", boxes, {
-    fill: "rgba(255,0,0,0.5)",
-    stroke: "rgba(255,0,0,1)",
-    lineWidth: 3,
-    z: 50
-  });
+  await env.plot.boxes("csv-zones", boxes);
 };`
-                  )
-                }
+                )}
+              />
+              {/* NEW: labels smoke test */}
+              <SnippetCard
+                title="Labels: Hello on last bar"
+                onUse={() => setCode(
+`module.exports = async (env) => {
+  const bars = await env.getBars();
+  if (!bars.length) return;
+  const last = bars[bars.length - 1];
+  await env.plot.labels("smoke", [{
+    time: last.time * 1000,  // ms
+    price: last.close,
+    text: "HELLO",
+    shape: "circle",
+    bg: "rgba(34,197,94,0.95)",
+    color: "#fff",
+    size: 12
+  }]);
+};`
+                )}
+                onCopy={() => navigator.clipboard.writeText(
+`module.exports = async (env) => {
+  const bars = await env.getBars();
+  if (!bars.length) return;
+  const last = bars[bars.length - 1];
+  await env.plot.labels("smoke", [{
+    time: last.time * 1000,
+    price: last.close,
+    text: "HELLO",
+    shape: "circle",
+    bg: "rgba(34,197,94,0.95)",
+    color: "#fff",
+    size: 12
+  }]);
+};`
+                )}
+              />
+              {/* NEW: RSI crosses → labels */}
+              <SnippetCard
+                title="Labels: RSI crosses 30/70"
+                onUse={() => setCode(
+`module.exports = async (env) => {
+  const bars = await env.getBars();
+  if (bars.length < 15) return;
+  const closes = bars.map(b => b.close);
+  const rsi = env.utils.rsi(closes, 14);
+  const labels = [];
+  const toMs = (sec) => sec * 1000;
+
+  for (let i = 1; i < bars.length; i++) {
+    const prev = rsi[i-1], curr = rsi[i];
+    if (prev < 30 && curr >= 30) {
+      labels.push({ time: toMs(bars[i].time), price: bars[i].low, text: "BUY", shape: "up",
+        bg: "rgba(34,197,94,0.95)", color: "#fff", size: 12 });
+    }
+    if (prev > 70 && curr <= 70) {
+      labels.push({ time: toMs(bars[i].time), price: bars[i].high, text: "SELL", shape: "down",
+        bg: "rgba(239,68,68,0.95)", color: "#fff", size: 12 });
+    }
+  }
+  await env.plot.labels("rsi-cross", labels);
+};`
+                )}
+                onCopy={() => navigator.clipboard.writeText(
+`module.exports = async (env) => {
+  const bars = await env.getBars();
+  if (bars.length < 15) return;
+  const closes = bars.map(b => b.close);
+  const rsi = env.utils.rsi(closes, 14);
+  const labels = [];
+  const toMs = (sec) => sec * 1000;
+  for (let i = 1; i < bars.length; i++) {
+    const prev = rsi[i-1], curr = rsi[i];
+    if (prev < 30 && curr >= 30) {
+      labels.push({ time: toMs(bars[i].time), price: bars[i].low, text: "BUY", shape: "up",
+        bg: "rgba(34,197,94,0.95)", color: "#fff", size: 12 });
+    }
+    if (prev > 70 && curr <= 70) {
+      labels.push({ time: toMs(bars[i].time), price: bars[i].high, text: "SELL", shape: "down",
+        bg: "rgba(239,68,68,0.95)", color: "#fff", size: 12 });
+    }
+  }
+  await env.plot.labels("rsi-cross", labels);
+};`
+                )}
               />
             </div>
           )}
@@ -631,12 +633,7 @@ module.exports = async (env) => {
             <div className="p-3 grid gap-3 overflow-auto">
               <div className="flex items-center gap-2">
                 <label className="text-sm">Upload CSV:</label>
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={(e) => onUploadFiles(e.target.files)}
-                  className="text-xs"
-                />
+                <input type="file" accept=".csv,text/csv" onChange={(e) => onUploadFiles(e.target.files)} className="text-xs" />
               </div>
 
               <div className="border border-white/15 rounded-md p-2">
@@ -646,16 +643,12 @@ module.exports = async (env) => {
                 ) : (
                   <ul className="text-xs list-disc pl-5">
                     {attachList.map((name) => (
-                      <li key={name}>
-                        <code>{name}</code>
-                      </li>
+                      <li key={name}><code>{name}</code></li>
                     ))}
                   </ul>
                 )}
                 <div className="mt-2">
-                  <Btn small variant="ghost" onClick={() => attachRefresh()}>
-                    Refresh
-                  </Btn>
+                  <Btn small variant="ghost" onClick={() => attachRefresh()}>Refresh</Btn>
                 </div>
               </div>
 
@@ -671,12 +664,7 @@ module.exports = async (env) => {
     top: Number(r.top),   bottom: Number(r.bottom),
   })).filter(b => Number.isFinite(b.from) && Number.isFinite(b.to));
 
-  await env.plot.boxes("csv-zones", boxes, {
-    fill: "rgba(255,0,0,0.5)",
-    stroke: "rgba(255,0,0,1)",
-    lineWidth: 3,
-    z: 50
-  });
+  await env.plot.boxes("csv-zones", boxes);
 };`}</pre>
               </div>
             </div>
@@ -699,7 +687,7 @@ env: {
     bands(id, data: {time,upper,basis,lower}[], opts?): Promise<void>;
     histogram(id, data: {time,value}[], opts?): Promise<void>;
     boxes(id, boxes: {from,to,top,bottom}[], opts?): Promise<void>;
-    labels(id, labels: {time,price,text,color}[]): Promise<void>;
+    labels(id, labels: {time,price,text?,shape?,bg?,color?,size?}[], opts?): Promise<void>; // NEW
   };
   attachments: {
     list(): Promise<string[]>;

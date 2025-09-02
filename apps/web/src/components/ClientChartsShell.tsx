@@ -1,3 +1,4 @@
+// src/components/ClientChartsShell.tsx
 "use client";
 
 import dynamic from "next/dynamic";
@@ -7,38 +8,34 @@ import IndicatorsDialog from "@/components/IndicatorsDialog";
 import Toolbar from "./Toolbar";
 import Button from "@/components/ui/button";
 import { Code } from "lucide-react";
-import { useState, useCallback, useMemo } from "react";
+import { useMemo, useState, useCallback } from "react";
 
 import { useChartStore } from "@/store/chartStore";
 import { usePlotRegistry, type PlotAdapter } from "@/store/plotRegistryStore";
 import { fetchSeries } from "@/lib/data/fetchers";
 import type { OHLC } from "@/lib/chart/lwcAdaptor";
-import { useIndicatorOverlayStore } from "@/store/indicatorOverlayStore";
+import { useIndicatorOverlayStore, type IndicatorLabel } from "@/store/indicatorOverlayStore";
 import { useAttachmentsStore } from "@/store/attachmentsStore";
-import DebugDrawButton from "@/components/DebugDrawButton";
 
+// client-only chunks
 const PanelsGrid = dynamic(() => import("@/components/PanelsGrid"), { ssr: false });
 const LayoutSwitcher = dynamic(() => import("@/components/LayoutSwitcher"), { ssr: false });
 const Watchlist = dynamic(() => import("@/components/Watchlist"), { ssr: false });
 
+// props-typed import for the editor drawer
 const EditorRunnerPanel = dynamic<import("@/components/EditorRunnerPanel").EditorRunnerPanelProps>(
   () => import("@/components/EditorRunnerPanel"),
   { ssr: false }
 );
 
+// helper: map OHLC to Bar
 const mapToBars = (rows: OHLC[]) =>
-  rows.map((b) => ({
-    time: b.t,
-    open: b.o,
-    high: b.h,
-    low: b.l,
-    close: b.c,
-    volume: b.v,
-  }));
+  rows.map((b) => ({ time: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v }));
 
 export default function ClientChartsShell() {
   const [showEditor, setShowEditor] = useState(false);
 
+  // current view/panel
   const layout = useChartStore((s) => s.layout);
   const activePanelId = useChartStore((s) => s.activePanelId);
   const activePanel = useChartStore((s) => s.panels[activePanelId]);
@@ -48,10 +45,13 @@ export default function ClientChartsShell() {
   const symbol = activePanel?.symbol ?? "DEMO";
   const timeframe = activePanel?.timeframe ?? "5m";
 
-  const plotsFromRegistry = usePlotRegistry((s) => s.get(viewId)) as PlotAdapter | undefined;
+  // adapter possibly registered by ChartPanel
+  const regPlots = usePlotRegistry((s) => s.get(viewId)) as PlotAdapter | undefined;
 
+  // attachments
   const getCsvByName = useAttachmentsStore((s) => s.getCsvByName);
 
+  // env for runner
   const getActiveChartEnv = useCallback(
     () => ({
       symbol,
@@ -64,22 +64,39 @@ export default function ClientChartsShell() {
         await useAttachmentsStore.getState().refresh();
         return useAttachmentsStore.getState().list;
       },
-      getCsvAttachment: async (name: string) => {
-        return getCsvByName(name);
-      },
+      getCsvAttachment: async (name: string) => getCsvByName(name),
     }),
     [symbol, timeframe, mode, getCsvByName]
   );
 
-  // FORCE overlay-backed plots for now (stable)
-const fallbackPlots: PlotAdapter = {
-  line: () => {},
-  bands: () => {},
-  histogram: () => {},
-  boxes: (id, boxes, opts) => useIndicatorOverlayStore.getState().setBoxes(viewId, id, boxes, opts),
-  labels: (id, labels) => useIndicatorOverlayStore.getState().setLabels(viewId, id, labels), // ⬅️ NEW
-};
+  // fallback adapter that writes to overlay store
+  const fallbackPlots: PlotAdapter = useMemo(
+    () => ({
+      line: () => {},
+      bands: () => {},
+      histogram: () => {},
+      boxes: (id, boxes, opts) => {
+        useIndicatorOverlayStore.getState().setBoxes(viewId, id, boxes, opts);
+      },
+      labels: (id: string, labels: IndicatorLabel[]) => {
+        useIndicatorOverlayStore.getState().setLabels(viewId, id, labels);
+      },
+    }),
+    [viewId]
+  );
 
+  // SAFE adapter: whatever is registered, ensure .labels exists
+  const plots: PlotAdapter = useMemo(() => {
+    if (!regPlots) return fallbackPlots;
+    return {
+      ...regPlots,
+      labels:
+        regPlots.labels ??
+        ((id: string, labels: IndicatorLabel[]) => {
+          useIndicatorOverlayStore.getState().setLabels(viewId, id, labels);
+        }),
+    };
+  }, [regPlots, fallbackPlots, viewId]);
 
   return (
     <div className="min-h-screen h-screen p-4 grid grid-cols-12 gap-4">
@@ -100,7 +117,6 @@ const fallbackPlots: PlotAdapter = {
               <Code className="h-4 w-4 mr-1" />
               {showEditor ? "Close Editor" : "Open Editor"}
             </Button>
-            <DebugDrawButton /> {/* NEW ⬅ add test painter */}
           </div>
           <CsvImportDialog />
         </div>
@@ -114,8 +130,7 @@ const fallbackPlots: PlotAdapter = {
             <EditorRunnerPanel
               viewId={viewId}
               getActiveChartEnv={getActiveChartEnv}
-              // keep forced overlay path until we see colors
-              plots={fallbackPlots}
+              plots={plots} // ← always has .labels now
               onApplyAsIndicator={async () => {}}
             />
           </div>
