@@ -19,6 +19,7 @@ import {
 import DrawingOverlay from "./DrawingOverlay";
 import type { CandlestickData } from "lightweight-charts";
 import { useIndicatorStore, type IndicatorId } from "@/store/indicatorStore";
+import { usePlotRegistry, type PlotAdapter } from "@/store/plotRegistryStore";
 
 interface CandlestickWithVol extends CandlestickData<Time> {
   volume?: number;
@@ -60,9 +61,9 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
   // indicators selected for this "view"
   const layout = useChartStore((s) => s.layout);
   const viewId = `${layout}:${panelId}`;
-  const selectedIndicators = useIndicatorStore(
-    useCallback((s) => s.list(viewId), [viewId])
-  ) as IndicatorId[];
+
+  const selectedMap = useIndicatorStore((s) => s.selected);
+  const selectedIndicators = selectedMap[viewId] ?? [];
 
   const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api/mock";
   const fallbackDemo = BASE.includes("/api/mock") || mode === "online";
@@ -302,6 +303,75 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     },
     [api]
   );
+  // inside ChartPanel component, after ensureLine/ensureHist etc.
+  const plotRegistryRegister = usePlotRegistry((s) => s.register);
+  const plotRegistryUnregister = usePlotRegistry((s) => s.unregister);
+
+  useEffect(() => {
+    if (!api) return;
+
+    // IMPORTANT: keep keys unique per primitive so different indicators don’t overwrite each other
+    const adapter: PlotAdapter = {
+      line: (id, series, opts) => {
+        const color = opts?.color ?? "#c8c8c8";
+        const priceScaleId = opts?.priceScaleId ?? "right";
+        const s = ensureLine(`line:${id}`, color, priceScaleId);
+        s?.setData(
+          series.map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value }))
+        );
+      },
+      bands: (id, series, opts) => {
+        // Plot as three lines: upper/basis/lower
+        const u = ensureLine(`bands:${id}:u`, opts?.upperColor ?? "#888", "right");
+        const m = ensureLine(`bands:${id}:m`, opts?.basisColor ?? "#aaa", "right");
+        const l = ensureLine(`bands:${id}:l`, opts?.lowerColor ?? "#888", "right");
+        const toU = series.map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.upper }));
+        const toM = series.map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.basis }));
+        const toL = series.map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.lower }));
+        u?.setData(toU);
+        m?.setData(toM);
+        l?.setData(toL);
+      },
+      histogram: (id, series, opts) => {
+        const s = ensureHist(`hist:${id}`, opts?.priceScaleId ?? "right");
+        s?.setData(
+          series.map((p) => ({
+            time: (p.time / 1000) as UTCTimestamp,
+            value: p.value,
+            color: opts?.color,
+          }))
+        );
+      },
+      boxes: (id, boxes, opts) => {
+        // Minimal viable “box” implementation: draw top/bottom as two lines.
+        // (Shading can be added later via DrawingOverlay or custom series.)
+        const t = ensureLine(`box:${id}:top`, opts?.topColor ?? "#666", "right");
+        const b = ensureLine(`box:${id}:bot`, opts?.bottomColor ?? "#666", "right");
+        // Convert boxes to 2-point segments per edge
+        const topSegs = boxes.flatMap((bx) => ([
+          { time: bx.from, value: bx.top },
+          { time: bx.to,   value: bx.top },
+        ])).map(p => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value }));
+        const botSegs = boxes.flatMap((bx) => ([
+          { time: bx.from, value: bx.bottom },
+          { time: bx.to,   value: bx.bottom },
+        ])).map(p => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value }));
+
+        t?.setData(topSegs);
+        b?.setData(botSegs);
+      },
+    };
+
+    const layout = useChartStore.getState().layout; // read once to build viewId here
+    const viewId = `${layout}:${panelId}`;
+
+    plotRegistryRegister(viewId, adapter);
+
+    return () => {
+      plotRegistryUnregister(viewId);
+      // optional: clear series you created with your overlaySeriesRef keys if needed
+    };
+  }, [api, panelId, ensureLine, ensureHist, plotRegistryRegister, plotRegistryUnregister]);
 
   const toLinePoints = useCallback(
     (arr: { time: number; value: number }[]): LineData<Time>[] =>

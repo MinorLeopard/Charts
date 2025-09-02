@@ -16,44 +16,22 @@ export const INDICATOR_IDS: readonly IndicatorId[] = [
 ] as const;
 
 type State = {
-  /** viewId -> selected indicators */
-  selected: Record<string, IndicatorId[]>;
-  /** bumping this can help components re-render where needed */
   version: number;
-
-  /** Toggle a single indicator for a view */
-  toggle: (viewId: string, id: IndicatorId) => void;
-
-  /** Replace the list for a view */
-  setSelected: (viewId: string, ids: IndicatorId[]) => void;
-
-  /**
-   * Returns a stable array reference for the current list.
-   * Important: never constructs a new array unless state changed.
-   */
-  list: (viewId: string) => IndicatorId[];
+  selected: Record<string, string[]>;
+  toggle: (viewId: string, id: string) => void;
+  activePanel: string | null;
+  setActivePanel: (id: string) => void;
 };
 
-export const useIndicatorStore = create<State>()((set, get) => ({
-  selected: {},
+export const useIndicatorStore = create<State>((set) => ({
   version: 0,
-
+  selected: {},
   toggle: (viewId, id) =>
     set((s) => {
-      const cur = s.selected[viewId] ?? EMPTY;
-      const exists = cur.includes(id);
-      const next = exists ? cur.filter((x) => x !== id) : [...cur, id];
-      return {
-        selected: { ...s.selected, [viewId]: next },
-        version: s.version + 1,
-      };
+      const cur = s.selected[viewId] ?? [];
+      const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+      return { version: s.version + 1, selected: { ...s.selected, [viewId]: next } };
     }),
-
-  setSelected: (viewId, ids) =>
-    set((s) => ({
-      selected: { ...s.selected, [viewId]: ids.slice() },
-      version: s.version + 1,
-    })),
-
-  list: (viewId) => get().selected[viewId] ?? EMPTY,
+  activePanel: null,
+  setActivePanel: (id) => set(() => ({ activePanel: id })),
 }));
