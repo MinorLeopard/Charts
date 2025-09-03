@@ -2,7 +2,6 @@
 import { create } from "zustand";
 
 export type IndicatorBox = {
-  // Accept either seconds or ms (we normalize in the overlay)
   from: number;   // epoch seconds preferred (ms also accepted)
   to: number;     // epoch seconds preferred (ms also accepted)
   top: number;
@@ -29,12 +28,11 @@ export type IndicatorLabel = {
   z?: number;
 
   // NEW (optional): marker support
-  shape?: "up" | "down" | "circle"; // triangle up/down or a small circle
-  size?: number;                    // pixel size of the marker (default 12)
-  stroke?: string;                  // optional marker stroke
-  strokeWidth?: number;             // stroke width (default 1)
+  shape?: "up" | "down" | "circle";
+  size?: number;
+  stroke?: string;
+  strokeWidth?: number;
 };
-
 
 export type OverlayPayload = {
   boxes?: IndicatorBox[];
@@ -49,6 +47,8 @@ type State = {
   setLabels: (viewId: string, id: string, labels: IndicatorLabel[]) => void;
   clearView: (viewId: string) => void;
   clearPlot: (viewId: string, id: string) => void;
+  /** NEW: clear any plot whose id starts with prefix (for namespaced custom indicators) */
+  clearByPrefix: (viewId: string, prefix: string) => void;
 };
 
 export const useIndicatorOverlayStore = create<State>((set, get) => ({
@@ -56,9 +56,6 @@ export const useIndicatorOverlayStore = create<State>((set, get) => ({
 
   setBoxes: (viewId, id, boxes, style) =>
     set((s) => {
-      console.log("[overlay.store] setBoxes →", {
-        viewId, id, count: boxes?.length ?? 0, style,
-      });
       const view = s.byView[viewId] ?? {};
       const prev = view[id] ?? {};
       return {
@@ -74,9 +71,6 @@ export const useIndicatorOverlayStore = create<State>((set, get) => ({
 
   setLabels: (viewId, id, labels) =>
     set((s) => {
-      console.log("[overlay.store] setLabels →", {
-        viewId, id, count: labels?.length ?? 0,
-      });
       const view = s.byView[viewId] ?? {};
       const prev = view[id] ?? {};
       return {
@@ -94,7 +88,6 @@ export const useIndicatorOverlayStore = create<State>((set, get) => ({
     set((s) => {
       const next = { ...s.byView };
       delete next[viewId];
-      console.log("[overlay.store] clearView", viewId);
       return { byView: next };
     }),
 
@@ -104,7 +97,17 @@ export const useIndicatorOverlayStore = create<State>((set, get) => ({
       if (!view) return s;
       const nextView = { ...view };
       delete nextView[id];
-      console.log("[overlay.store] clearPlot", { viewId, id });
+      return { byView: { ...s.byView, [viewId]: nextView } };
+    }),
+
+  clearByPrefix: (viewId, prefix) =>
+    set((s) => {
+      const view = s.byView[viewId];
+      if (!view) return s;
+      const nextView: Record<string, OverlayPayload> = {};
+      for (const [k, v] of Object.entries(view)) {
+        if (!k.startsWith(prefix)) nextView[k] = v;
+      }
       return { byView: { ...s.byView, [viewId]: nextView } };
     }),
 }));

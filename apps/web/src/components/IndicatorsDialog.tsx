@@ -57,10 +57,10 @@ export default function IndicatorsDialog() {
     return new Set(arr);
   }, [stockSelectedMap, viewId, stockVersion]);
 
-
-  // ---- Custom indicators (use version + getState in memo) ----
+  // ---- Custom indicators ----
   const customVersion = useCustomIndicatorStore((s) => s.version);
   const toggleCustom = useCustomIndicatorStore((s) => s.toggleForView);
+  const startEditing = useCustomIndicatorStore((s) => s.startEditing);
 
   const { allCustom, customChecked } = useMemo(() => {
     const st = useCustomIndicatorStore.getState();
@@ -104,14 +104,16 @@ export default function IndicatorsDialog() {
             <div>
               <Section title="Built-in">
                 {STOCK_IDS.map((id) => (
-                  <label key={id} className="flex items-center gap-2 cursor-pointer py-1">
-                    <input
-                      type="checkbox"
-                      checked={stockChecked.has(id)}
-                      onChange={() => toggleStock(viewId, id)}
-                    />
-                    <span className="text-sm">{id.toUpperCase()}</span>
-                  </label>
+                  <div key={id} className="flex items-center justify-between py-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={stockChecked.has(id)}
+                        onChange={() => toggleStock(viewId, id)}
+                      />
+                      <span className="text-sm">{id.toUpperCase()}</span>
+                    </label>
+                  </div>
                 ))}
               </Section>
               <div className="text-[11px] opacity-60">
@@ -127,19 +129,35 @@ export default function IndicatorsDialog() {
                   </div>
                 )}
                 {allCustom.map((ci) => (
-                  <label key={ci.id} className="flex items-center gap-2 cursor-pointer py-1">
-                    <input
-                      type="checkbox"
-                      checked={customChecked.has(ci.id)}
-                      onChange={() => toggleCustom(viewId, ci.id)}
-                    />
-                    <div className="flex flex-col">
-                      <span className="text-sm">{ci.name}</span>
-                      <span className="text-[11px] opacity-60">
-                        v{ci.version} · {ci.visibility}
-                      </span>
-                    </div>
-                  </label>
+                  <div key={ci.id} className="flex items-center justify-between py-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={customChecked.has(ci.id)}
+                        onChange={() => toggleCustom(viewId, ci.id)}
+                      />
+                      <div className="flex flex-col">
+                        <span className="text-sm">{ci.name}</span>
+                        <span className="text-[11px] opacity-60">
+                          v{ci.version} · {ci.visibility}
+                        </span>
+                      </div>
+                    </label>
+
+                    {/* Edit button — don't toggle checkbox when clicked */}
+                    <button
+                      className="text-xs px-2 py-1 rounded border hover:bg-white/5"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        startEditing(ci.id);
+                        setOpen(false);
+                      }}
+                      title="Edit in editor"
+                    >
+                      Edit
+                    </button>
+                  </div>
                 ))}
               </Section>
             </div>

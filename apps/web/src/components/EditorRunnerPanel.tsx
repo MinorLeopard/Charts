@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useAttachmentsStore } from "@/store/attachmentsStore";
 import type { PlotAdapter } from "@/store/plotRegistryStore";
-
+import { useCustomIndicatorStore } from "@/store/customIndicatorStore";
 
 // Lazy-load Monaco
 const Monaco = dynamic(() => import("@monaco-editor/react"), { ssr: false });
@@ -18,15 +18,11 @@ type Label = {
   color?: string;
   bg?: string;
   align?: "above" | "below";
-  // NEW (optional)
   shape?: "up" | "down" | "circle";
   size?: number;
   stroke?: string;
   strokeWidth?: number;
 };
-
-
-
 
 export type EditorRunnerPanelProps = {
   viewId: string;
@@ -38,11 +34,13 @@ export type EditorRunnerPanelProps = {
     getCsvAttachment?: (name: string) => Promise<{ columns: string[]; rows: any[] }>;
   };
   plots: PlotAdapter;
+
+  // Kept optional to silence any legacy prop usage from the shell
   onApplyAsIndicator?: (args: { name: string; code: string; viewId: string }) => Promise<void>;
+
   initialCode?: string;
 };
 
-/** -------- Minimal UI primitives (no shadcn) -------- */
 function Btn(
   props: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "ghost"; small?: boolean }
 ) {
@@ -99,20 +97,12 @@ function Tabs<T extends string>({
 /** -------- Worker factory (safe, dependency-free) -------- */
 function createRunnerWorker(): Worker {
   const src = `
-    const safeKeys = new Set([
-      'Infinity','NaN','isFinite','isNaN','parseFloat','parseInt',
-      'decodeURI','decodeURIComponent','encodeURI','encodeURIComponent',
-      'Math','Number','BigInt','Date','Array','Object','Boolean','String','RegExp','Map','Set','WeakMap','WeakSet',
-      'Int8Array','Uint8Array','Uint8ClampedArray','Int16Array','Uint16Array','Int32Array','Uint32Array','Float32Array','Float64Array'
-    ]);
-
-    function compile(code) {
+    function compile(code){
       const wrapped = \`"use strict"; let exports = {}; let module = { exports };\\n\` + code +
         \`\\n; const __exp = module.exports && module.exports.default ? module.exports.default : module.exports; return __exp;\`;
-      return new Function(wrapped); // eslint-disable-line no-new-func
+      return new Function(wrapped);
     }
-
-    function rpc(method, params) {
+    function rpc(method, params){
       return new Promise((resolve, reject) => {
         const id = Math.random().toString(36).slice(2);
         const handler = (e) => {
@@ -126,27 +116,18 @@ function createRunnerWorker(): Worker {
         postMessage({ __rpc: true, id, method, params });
       });
     }
-
-    function makeEnv(spec) {
+    function makeEnv(spec){
       return {
         symbol: spec.symbol,
         timeframe: spec.timeframe,
         getBars: (s, tf) => rpc('getBars', { symbol: s, timeframe: tf }),
-plot: {
-  line: (id, series, opts) => rpc('plot:line', { id, series, opts }),
-  bands: (id, series, opts) => rpc('plot:bands', { id, series, opts }),
-  histogram: (id, series, opts) => rpc('plot:histogram', { id, series, opts }),
-  boxes: (id, boxes, opts) => rpc('plot:boxes', { id, boxes, opts }),
-  labels: (id, labels, opts) => rpc('plot:labels', { id, labels, opts }),
-
-  // TEMPORARY stubs so bad calls don’t crash your session:
-  segments: () => { throw new Error('env.plot.segments is not supported yet'); },
-  rays:      () => { throw new Error('env.plot.rays is not supported yet'); },
-  arrows:    () => { throw new Error('env.plot.arrows is not supported yet'); },
-  polys:     () => { throw new Error('env.plot.polys is not supported yet'); },
-  fibs:      () => { throw new Error('env.plot.fibs is not supported yet'); },
-},
-
+        plot: {
+          line: (id, series, opts) => rpc('plot:line', { id, series, opts }),
+          bands: (id, series, opts) => rpc('plot:bands', { id, series, opts }),
+          histogram: (id, series, opts) => rpc('plot:histogram', { id, series, opts }),
+          boxes: (id, boxes, opts) => rpc('plot:boxes', { id, boxes, opts }),
+          labels: (id, labels, opts) => rpc('plot:labels', { id, labels, opts }),
+        },
         attachments: {
           list: () => rpc('attachments:list', {}),
           csv: (name) => rpc('attachments:csv', { name }),
@@ -166,28 +147,25 @@ plot: {
         }
       };
     }
-
     self.onmessage = async (e) => {
       const msg = e.data;
       if (!msg || msg.type !== 'run') return;
-      const { code, envSpec, timeoutMs = 250 } = msg;
-      let timedOut = false;
+      const { code, envSpec, timeoutMs = 2000 } = msg;
+      let finished = false;
       const timer = setTimeout(() => {
-        timedOut = true;
-        postMessage({ type: 'log', level: 'error', text: 'Runtime timed out' });
+        if (!finished) postMessage({ type: 'done', timedOut: true });
       }, timeoutMs);
-
       try {
         const factory = compile(code);
         const entry = factory();
-        if (typeof entry !== 'function') throw new Error('Your script must export a function via module.exports = (env)=>{...} or export default (env)=>{...}');
+        if (typeof entry !== 'function') throw new Error('Your script must export a function via module.exports or export default');
         const env = makeEnv(envSpec);
-        postMessage({ type: 'log', level: 'info', text: 'Running on active chart…' });
         const maybe = entry(env);
         if (maybe && typeof maybe.then === 'function') await maybe;
-        if (!timedOut) postMessage({ type: 'done' });
+        finished = true;
+        postMessage({ type: 'done' });
       } catch (err) {
-        postMessage({ type: 'log', level: 'error', text: String(err && err.message || err) });
+        postMessage({ type: 'done', error: String(err && err.message || err) });
       } finally {
         clearTimeout(timer);
       }
@@ -196,6 +174,8 @@ plot: {
   const blob = new Blob([src], { type: "application/javascript" });
   return new Worker(URL.createObjectURL(blob), { name: "indicator-runner" });
 }
+
+const DEFAULT_NAME = "Untitled Indicator";
 
 const DEFAULT_SAMPLE = `// Example: Bollinger Bands overlay
 // Tip: module.exports = async (env) => { ... }  OR  export default async (env) => { ... }
@@ -227,10 +207,15 @@ module.exports = async (env) => {
 `;
 
 export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
-  const { viewId, getActiveChartEnv, plots, onApplyAsIndicator, initialCode } = props;
+  const { viewId, getActiveChartEnv, plots, initialCode } = props;
 
   const [code, setCode] = useState<string>(initialCode ?? DEFAULT_SAMPLE);
-  const [name, setName] = useState<string>("Untitled Indicator");
+  const [name, setName] = useState<string>(DEFAULT_NAME);
+  const nameRef = useRef(name);
+  useEffect(() => {
+    nameRef.current = name;
+  }, [name]);
+
   const [tab, setTab] = useState<"console" | "snippets" | "attachments" | "api">("console");
   const [consoleLines, setConsoleLines] = useState<string[]>([]);
   const [running, setRunning] = useState<boolean>(false);
@@ -241,31 +226,54 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isDragging = useRef<boolean>(false);
 
+  // Namespace for series emitted by "Run": `${savedId}::`
+  const currentNsRef = useRef<string>("");
+
   // Attachments store
   const attachAdd = useAttachmentsStore((s) => s.add);
   const attachRefresh = useAttachmentsStore((s) => s.refresh);
   const attachList = useAttachmentsStore((s) => s.list);
 
-  // Initialize worker
+  // Custom indicator store (stable selectors)
+  const upsertCustom = useCustomIndicatorStore((s) => s.upsert);
+  const allCustom = useCustomIndicatorStore((s) => s.all);
+  const toggleCustomForView = useCustomIndicatorStore((s) => s.toggleForView);
+  const editingId = useCustomIndicatorStore((s) => s.editingId);
+  const byId = useCustomIndicatorStore((s) => s.byId);
+  const clearEditing = useCustomIndicatorStore((s) => s.clearEditing);
+
+  // Load requested indicator into the editor
+  useEffect(() => {
+    if (!editingId) return;
+    const ci = byId(editingId);
+    if (ci) {
+      setName(ci.name || DEFAULT_NAME);
+      setCode(ci.code || "");
+      setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ✏️ Loaded "${ci.name}" into editor`].slice(-400));
+    }
+    clearEditing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId]);
+
+  // Initialize/teardown worker
   useEffect(() => {
     const w = createRunnerWorker();
     workerRef.current = w;
-
     const handleMessage = (ev: MessageEvent) => {
       const msg = ev.data as any;
       if (!msg) return;
-      if (msg.type === "log") {
-        setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ${String(msg.level).toUpperCase()}: ${msg.text}`].slice(-400));
-        return;
-      }
       if (msg.type === "done") {
         setRunning(false);
-        setLastOk(Date.now());
-        setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ✅ Completed`].slice(-400));
-        return;
+        if (!msg.error && !msg.timedOut) {
+          setLastOk(Date.now());
+          setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ✅ Completed`].slice(-400));
+        } else if (msg.timedOut) {
+          setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ⏱️ Timed out`].slice(-400));
+        } else if (msg.error) {
+          setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ❌ Error: ${msg.error}`].slice(-400));
+        }
       }
     };
-
     w.addEventListener("message", handleMessage);
     return () => {
       w.removeEventListener("message", handleMessage);
@@ -274,7 +282,7 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
     };
   }, []);
 
-  // Provide RPC services to the worker (getBars/plot/attachments)
+  // Provide RPC services to the worker
   useEffect(() => {
     const w = workerRef.current;
     if (!w) return;
@@ -297,58 +305,56 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
             return reply(out);
           }
           case "plot:line": {
-            plots.line(params.id as string, params.series as { time: number; value: number }[], params.opts || {});
+            const pid = String(params.id);
+            const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
+            plots.line(nid, params.series as { time: number; value: number }[], params.opts || {});
             return reply(true);
           }
           case "plot:bands": {
+            const pid = String(params.id);
+            const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
             plots.bands(
-              params.id as string,
+              nid,
               params.series as { time: number; upper: number; basis: number; lower: number }[],
               params.opts || {}
             );
             return reply(true);
           }
           case "plot:histogram": {
-            plots.histogram(params.id as string, params.series as { time: number; value: number }[], params.opts || {});
+            const pid = String(params.id);
+            const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
+            plots.histogram(nid, params.series as { time: number; value: number }[], params.opts || {});
             return reply(true);
           }
-case "plot:boxes": {
-  console.log("[EditorRunnerPanel] plot:boxes", params?.id, Array.isArray(params?.boxes) ? params.boxes.length : params?.boxes, params?.opts);
-  if (typeof plots.boxes !== "function") {
-    console.warn("[EditorRunnerPanel] plots.boxes is NOT a function for view", viewId);
-  }
-  plots.boxes?.(
-    params.id as string,
-    params.boxes as { from: number; to: number; top: number; bottom: number }[],
-    params.opts || {}
-  );
-  return reply(true);
-}
-
-          // NEW: labels
-case "plot:labels": {
-  const raw = (params?.labels || []) as Label[];
-
-  const safe = raw.map((l) => ({
-    time: l.time,
-    price: l.price,
-    text: l.text ?? "",                // keep your strict text
-    color: l.color ?? "#ffffff",
-    bg: l.bg ?? "rgba(0,0,0,0.6)",
-    align: (l.align ?? "above"),
-
-    // NEW
-    shape: l.shape as ("up" | "down" | "circle") | undefined,
-    size: typeof l.size === "number" ? l.size : undefined,
-    stroke: typeof (l as any).stroke === "string" ? (l as any).stroke : undefined,
-    strokeWidth: typeof (l as any).strokeWidth === "number" ? (l as any).strokeWidth : undefined,
-  }));
-
-  plots.labels(params.id as string, safe);
-  return reply(true);
-}
-
-
+          case "plot:boxes": {
+            const pid = String(params.id);
+            const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
+            plots.boxes?.(
+              nid,
+              params.boxes as { from: number; to: number; top: number; bottom: number }[],
+              params.opts || {}
+            );
+            return reply(true);
+          }
+          case "plot:labels": {
+            const pid = String(params.id);
+            const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
+            const raw = (params?.labels || []) as Label[];
+            const safe = raw.map((l) => ({
+              time: l.time,
+              price: l.price,
+              text: l.text ?? "",
+              color: l.color ?? "#ffffff",
+              bg: l.bg ?? "rgba(0,0,0,0.6)",
+              align: l.align ?? "above",
+              shape: l.shape as "up" | "down" | "circle" | undefined,
+              size: typeof l.size === "number" ? l.size : undefined,
+              stroke: typeof (l as any).stroke === "string" ? (l as any).stroke : undefined,
+              strokeWidth: typeof (l as any).strokeWidth === "number" ? (l as any).strokeWidth : undefined,
+            }));
+            plots.labels(nid, safe);
+            return reply(true);
+          }
           case "attachments:list": {
             const list = env.listAttachments ? await env.listAttachments() : [];
             return reply(list);
@@ -372,25 +378,73 @@ case "plot:labels": {
     };
   }, [getActiveChartEnv, plots]);
 
-  const runOnActive = useCallback(() => {
+  /** Ensure we always use the **latest** text the user typed */
+  const ensureIndicatorName = useCallback(async (): Promise<string | null> => {
+    let nm = (nameRef.current || "").trim();
+    if (!nm || nm === DEFAULT_NAME) {
+      const typed = window.prompt("Save indicator as (name):", nm || "");
+      if (!typed) return null;
+      nm = typed.trim();
+      if (!nm) return null;
+      setName(nm); // reflect the chosen name in the input
+    }
+    return nm;
+  }, []);
+
+  const saveIndicator = useCallback(async () => {
+    const indicatorName = await ensureIndicatorName();
+    if (!indicatorName) return false;
+
+    const existing = allCustom().find((ci) => ci.name === indicatorName);
+    const id = existing?.id ?? `custom-${Date.now()}`;
+
+    upsertCustom({
+      id,
+      name: indicatorName,
+      code,
+      version: (existing?.version ?? 0) + 1,
+      visibility: existing?.visibility ?? "private",
+      description: existing?.description,
+      paramSchema: existing?.paramSchema,
+      updatedAt: Date.now(),
+    });
+
+    setConsoleLines((l) =>
+      [...l, `[${new Date().toLocaleTimeString()}] 💾 Saved "${indicatorName}" (v${(existing?.version ?? 0) + 1})`].slice(-400)
+    );
+    return id;
+  }, [allCustom, code, upsertCustom, ensureIndicatorName]);
+
+  const runOnActive = useCallback(async () => {
     const w = workerRef.current;
     if (!w) return;
+
+    const savedId = await saveIndicator();
+    if (!savedId) return;
+
+    // namespace for all plot:* calls made during this run
+    currentNsRef.current = `${savedId}::`;
+
+    const before = useCustomIndicatorStore.getState().listForView(viewId);
+    if (!before.includes(savedId)) {
+      toggleCustomForView(viewId, savedId);
+      const nm = useCustomIndicatorStore.getState().byId(savedId)?.name ?? savedId;
+      setConsoleLines((l) =>
+        [...l, `[${new Date().toLocaleTimeString()}] ✅ Applied "${nm}" to ${viewId}`].slice(-400)
+      );
+    }
+
     setRunning(true);
     const env = getActiveChartEnv();
-    setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ▶ Running on ${env.symbol} (${env.timeframe})…`].slice(-400));
+    setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ▶ Running on ${env.symbol}, ${env.timeframe}…`].slice(-400));
+
     w.postMessage({
       type: "run",
       code,
       envSpec: { symbol: env.symbol, timeframe: env.timeframe },
-      timeoutMs: 250,
+      timeoutMs: 2000,
     });
-  }, [code, getActiveChartEnv]);
-
-  const applyAsIndicator = useCallback(async () => {
-    if (!onApplyAsIndicator) return;
-    await onApplyAsIndicator({ name, code, viewId });
-    setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] 💾 Saved & applied to ${viewId}`].slice(-400));
-  }, [name, code, viewId, onApplyAsIndicator]);
+  }, [code, getActiveChartEnv, saveIndicator, toggleCustomForView, viewId]);
 
   // Resizer between editor and lower panel
   useEffect(() => {
@@ -433,11 +487,9 @@ case "plot:labels": {
           <Btn small onClick={runOnActive} disabled={running}>
             {running ? "Running…" : "Run on Active Chart"}
           </Btn>
-          {onApplyAsIndicator && (
-            <Btn small variant="ghost" onClick={applyAsIndicator}>
-              Add to Chart
-            </Btn>
-          )}
+          <Btn small variant="ghost" onClick={async (ev) => { ev.preventDefault(); await saveIndicator(); }}>
+            Save
+          </Btn>
           {lastOk && <span className="text-xs text-emerald-400">OK {new Date(lastOk).toLocaleTimeString()}</span>}
         </div>
       </div>
@@ -534,7 +586,7 @@ case "plot:labels": {
               <SnippetCard
                 title="CSV → Boxes"
                 onUse={() => setCode(
-`// zones.csv columns: from,to,top,bottom  (times in ms)
+`// zones.csv columns: from,to,top,bottom  (times in ms or sec)
 module.exports = async (env) => {
   const files = await env.attachments.list();
   if (!files.includes("zones.csv")) throw new Error("Attach zones.csv first");
@@ -549,7 +601,7 @@ module.exports = async (env) => {
 };`
                 )}
                 onCopy={() => navigator.clipboard.writeText(
-`// zones.csv columns: from,to,top,bottom  (times in ms)
+`// zones.csv columns: from,to,top,bottom  (times in ms or sec)
 module.exports = async (env) => {
   const files = await env.attachments.list();
   if (!files.includes("zones.csv")) throw new Error("Attach zones.csv first");
@@ -564,7 +616,7 @@ module.exports = async (env) => {
 };`
                 )}
               />
-              {/* NEW: labels smoke test */}
+              {/* Labels smoke tests */}
               <SnippetCard
                 title="Labels: Hello on last bar"
                 onUse={() => setCode(
@@ -573,7 +625,7 @@ module.exports = async (env) => {
   if (!bars.length) return;
   const last = bars[bars.length - 1];
   await env.plot.labels("smoke", [{
-    time: last.time * 1000,  // ms
+    time: last.time,  // ms
     price: last.close,
     text: "HELLO",
     shape: "circle",
@@ -589,7 +641,7 @@ module.exports = async (env) => {
   if (!bars.length) return;
   const last = bars[bars.length - 1];
   await env.plot.labels("smoke", [{
-    time: last.time * 1000,
+    time: last.time,
     price: last.close,
     text: "HELLO",
     shape: "circle",
@@ -600,7 +652,6 @@ module.exports = async (env) => {
 };`
                 )}
               />
-              {/* NEW: RSI crosses → labels */}
               <SnippetCard
                 title="Labels: RSI crosses 30/70"
                 onUse={() => setCode(
@@ -610,7 +661,7 @@ module.exports = async (env) => {
   const closes = bars.map(b => b.close);
   const rsi = env.utils.rsi(closes, 14);
   const labels = [];
-  const toMs = (sec) => sec * 1000;
+  const toMs = (sec) => sec * 1;
 
   for (let i = 1; i < bars.length; i++) {
     const prev = rsi[i-1], curr = rsi[i];
@@ -633,7 +684,7 @@ module.exports = async (env) => {
   const closes = bars.map(b => b.close);
   const rsi = env.utils.rsi(closes, 14);
   const labels = [];
-  const toMs = (sec) => sec * 1000;
+  const toMs = (sec) => sec * 1;
   for (let i = 1; i < bars.length; i++) {
     const prev = rsi[i-1], curr = rsi[i];
     if (prev < 30 && curr >= 30) {
@@ -698,7 +749,7 @@ module.exports = async (env) => {
           {tab === "api" && (
             <div className="p-3 text-xs leading-5 overflow-auto">
               <pre className="whitespace-pre-wrap">{`module.exports = async function main(env) { /* … */ }
-              // Indicator Runtime (seconds-based)
+              
 type Bar = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 
 type Box = { from: number; to: number; top: number; bottom: number };
@@ -708,6 +759,7 @@ type Label = {
   time: number; price: number; text: string;
   color?: string; bg?: string; align?: "above" | "below" | "left" | "right" | "center";
   font?: string; paddingX?: number; paddingY?: number; z?: number;
+  shape?: "up" | "down" | "circle"; size?: number; stroke?: string; strokeWidth?: number;
 };
 
 env = {
@@ -718,34 +770,14 @@ env = {
     line(id: string, series: {time:number; value:number}[], opts?: any): Promise<void>,
     bands(id: string, series: {time:number; upper:number; basis:number; lower:number}[], opts?: any): Promise<void>,
     histogram(id: string, series: {time:number; value:number}[], opts?: any): Promise<void>,
-    boxes(id: string, boxes: Box[], style?: BoxStyle): Promise<void>,   // seconds
-    labels(id: string, labels: Label[], opts?: any): Promise<void>,     // seconds
+    boxes(id: string, boxes: Box[], style?: BoxStyle): Promise<void>,
+    labels(id: string, labels: Label[], opts?: any): Promise<void>,
   },
   attachments: { list(): Promise<string[]>; csv(name: string): Promise<{columns:string[]; rows:any[]}>; },
-  utils: { sma(arr:number[],len:number):number[]; ema(...):number[]; rsi(...):number[]; },
+  utils: { sma(arr:number[],len:number):number[]; ema(arr:number[],len:number):number[]; rsi(arr:number[],len?:number):number[]; },
 };
 
-// or: export default async function main(env) { /* … */ }
-
-type Bar = { time: number; open: number; high: number; low: number; close: number; volume?: number };
-
-env: {
-  symbol: string;
-  timeframe: string;               // "1m" | "5m" | "1h" | "1d"
-  getBars(symbol?: string, tf?: string): Promise<Bar[]>;
-  plot: {
-    line(id, data: {time,value}[], opts?): Promise<void>;
-    bands(id, data: {time,upper,basis,lower}[], opts?): Promise<void>;
-    histogram(id, data: {time,value}[], opts?): Promise<void>;
-    boxes(id, boxes: {from,to,top,bottom}[], opts?): Promise<void>;
-    labels(id, labels: {time,price,text?,shape?,bg?,color?,size?}[], opts?): Promise<void>; // NEW
-  };
-  attachments: {
-    list(): Promise<string[]>;
-    csv(name: string): Promise<{ columns: string[]; rows: any[] }>;
-  };
-  utils: { sma(arr:number[],len:number):number[]; ema(arr:number[],len:number):number[]; rsi(arr:number[],len?:number):number[] };
-}`}</pre>
+// or: export default async function main(env) { /* … */ }`}</pre>
             </div>
           )}
         </div>

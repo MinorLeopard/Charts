@@ -6,7 +6,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 /** Visibility of an indicator in the library. */
 export type Visibility = "private" | "public";
 
-/** Simple param schema placeholder (step-1). */
+/** Simple param schema placeholder. */
 export type ParamSchema = {
   [key: string]:
     | { type: "number"; min?: number; max?: number; step?: number; default?: number }
@@ -15,40 +15,39 @@ export type ParamSchema = {
 };
 
 export type CustomIndicator = {
-  id: string;            // slug/uuid
+  id: string;
   name: string;
-  code: string;          // JS (for step-1). We’ll allow TS in step-2 via worker/transpile.
+  code: string;
   version: number;
   visibility: Visibility;
   description?: string;
   paramSchema?: ParamSchema;
-  updatedAt: number;     // epoch ms
-  // We don't store CSV bytes here; those live in IndexedDB via attachments helper.
+  updatedAt: number;
 };
 
 type Registry = Record<string, CustomIndicator>;
 type SelectedByView = Record<string, string[]>;
 
 type State = {
-  registry: Registry;              // id -> indicator meta/code
-  selectedByView: SelectedByView;  // viewId -> [indicatorIds]
-  version: number;                 // bump to force UI refresh if needed
+  registry: Registry;
+  selectedByView: SelectedByView;
+  version: number;
 
-  /** CRUD */
   upsert: (ci: CustomIndicator) => void;
   remove: (id: string) => void;
 
-  /** Helpers for editor save (shortcut) */
   saveCustom: (viewId: string, code: string, fn: Function) => void;
 
-  /** Listing helpers */
   all: () => CustomIndicator[];
   byId: (id: string) => CustomIndicator | undefined;
 
-  /** Selection per view (layout:panel) */
   listForView: (viewId: string) => string[];
   toggleForView: (viewId: string, id: string) => void;
   isSelected: (viewId: string, id: string) => boolean;
+
+  editingId: string | null;
+  startEditing: (id: string) => void;
+  clearEditing: () => void;
 };
 
 const EMPTY: string[] = [];
@@ -70,7 +69,6 @@ export const useCustomIndicatorStore = create<State>()(
         set((s) => {
           const next: Registry = { ...s.registry };
           delete next[id];
-          // also remove from selections
           const nextSel: SelectedByView = {};
           for (const [viewId, arr] of Object.entries(s.selectedByView)) {
             nextSel[viewId] = arr.filter((x) => x !== id);
@@ -78,8 +76,7 @@ export const useCustomIndicatorStore = create<State>()(
           return { registry: next, selectedByView: nextSel, version: s.version + 1 };
         }),
 
-      /** Save directly from editor (auto wraps into CustomIndicator and selects it). */
-      saveCustom: (viewId, code, fn) => {
+      saveCustom: (viewId, code, _fn) => {
         const id = `custom-${Date.now()}`;
         const ci: CustomIndicator = {
           id,
@@ -101,38 +98,50 @@ export const useCustomIndicatorStore = create<State>()(
       },
 
       all: () => Object.values(get().registry).sort((a, b) => b.updatedAt - a.updatedAt),
-
       byId: (id: string) => get().registry[id],
 
-      listForView: (viewId: string) => {
-        const found = get().selectedByView[viewId];
-        return found ?? EMPTY;
-      },
+      listForView: (viewId: string) => get().selectedByView[viewId] ?? EMPTY,
 
       toggleForView: (viewId: string, id: string) =>
         set((s) => {
           const curr = s.selectedByView[viewId] ?? EMPTY;
           const has = curr.includes(id);
           const next = has ? curr.filter((x) => x !== id) : [...curr, id];
-          return {
-            selectedByView: { ...s.selectedByView, [viewId]: next },
-            version: s.version + 1,
-          };
+          return { selectedByView: { ...s.selectedByView, [viewId]: next }, version: s.version + 1 };
         }),
 
       isSelected: (viewId: string, id: string) => {
         const curr = get().selectedByView[viewId] ?? EMPTY;
         return curr.includes(id);
       },
+
+      editingId: null,
+      startEditing: (id: string) => set(() => ({ editingId: id })),
+      clearEditing: () => set(() => ({ editingId: null })),
     }),
     {
       name: "custom-indicator-store",
       storage: createJSONStorage(() => localStorage),
-      version: 1,
+      version: 2,
+      migrate: (persisted: any, fromVersion) => {
+        // We only added editingId (non-persisted) and bumped version; keep existing data shape.
+        if (!persisted || typeof persisted !== "object") return { registry: {}, selectedByView: {}, version: 1 };
+        if (fromVersion < 1) {
+          // very old/unexpected; normalize
+          return { registry: {}, selectedByView: {}, version: 1 };
+        }
+        // Ensure required keys exist
+        return {
+          registry: persisted.registry ?? {},
+          selectedByView: persisted.selectedByView ?? {},
+          version: typeof persisted.version === "number" ? persisted.version : 1,
+        };
+      },
       partialize: (s) => ({
         registry: s.registry,
         selectedByView: s.selectedByView,
         version: s.version,
+        // editingId is intentionally NOT persisted
       }),
     }
   )

@@ -21,30 +21,18 @@ export type PlotAdapter = {
 
 function teeBoxes(viewId: string, maybe: PlotAdapter["boxes"] | undefined): PlotAdapter["boxes"] {
   return (id, boxes, opts) => {
-    // ALWAYS push to overlay store
-    console.log("[plot.registry] boxes → store", { viewId, id, count: boxes?.length ?? 0, style: opts, first: boxes?.[0] });
     useIndicatorOverlayStore.getState().setBoxes(viewId, id, boxes, opts);
-    // Optionally let the panel adapter also handle it
     if (typeof maybe === "function") {
-      try {
-        maybe(id, boxes, opts);
-      } catch (e) {
-        console.warn("[plot.registry] adapter boxes threw", e);
-      }
+      try { maybe(id, boxes, opts); } catch (e) { console.warn("[plot.registry] adapter boxes threw", e); }
     }
   };
 }
 
 function teeLabels(viewId: string, maybe: PlotAdapter["labels"] | undefined): PlotAdapter["labels"] {
   return (id, labels, _opts) => {
-    console.log("[plot.registry] labels → store", { viewId, id, count: labels?.length ?? 0, first: labels?.[0] });
     useIndicatorOverlayStore.getState().setLabels(viewId, id, labels);
     if (typeof maybe === "function") {
-      try {
-        maybe(id, labels, _opts);
-      } catch (e) {
-        console.warn("[plot.registry] adapter labels threw", e);
-      }
+      try { maybe(id, labels, _opts); } catch (e) { console.warn("[plot.registry] adapter labels threw", e); }
     }
   };
 }
@@ -63,21 +51,32 @@ type State = {
   register: (viewId: string, adapter?: PlotAdapter) => void;
   unregister: (viewId: string) => void;
   get: (viewId: string) => PlotAdapter | undefined;
+
+  /** Some callers still use this helper; provide it here. */
+  clearViewAndId: (viewId: string, idPrefix: string) => void;
 };
 
 export const usePlotRegistry = create<State>((set, get) => ({
   map: {},
+
   register: (viewId, adapter) =>
     set((s) => {
       const merged = makeAdapter(viewId, adapter);
-      console.log("[plot.registry] register", viewId, adapter ? "(custom+tee)" : "(tee-only)");
       return { map: { ...s.map, [viewId]: merged } };
     }),
+
   unregister: (viewId) =>
     set((s) => {
       const m = { ...s.map };
       delete m[viewId];
       return { map: m };
     }),
+
   get: (viewId) => get().map[viewId],
+
+  clearViewAndId: (viewId, idPrefix) => {
+    // Delegate clearing overlays to the overlay store
+    useIndicatorOverlayStore.getState().clearByPrefix(viewId, idPrefix);
+    // Note: panel-created chart series are removed in ChartPanel (by prefix) where the series instances live.
+  },
 }));
