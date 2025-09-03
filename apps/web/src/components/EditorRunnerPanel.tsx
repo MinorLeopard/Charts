@@ -5,20 +5,26 @@ import dynamic from "next/dynamic";
 import { useAttachmentsStore } from "@/store/attachmentsStore";
 import type { PlotAdapter } from "@/store/plotRegistryStore";
 
+
 // Lazy-load Monaco
 const Monaco = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 
-// near the top with other types
 type Label = {
-  time: number;              // ms epoch or seconds? keep consistent with your usage (you used ms)
+  time: number;
   price: number;
-  text?: string;             // optional in editor API
-  color?: string;            // text color
-  bg?: string;               // background fill
-  align?: "above" | "below"; // your overlay supports these
+  text?: string;
+  color?: string;
+  bg?: string;
+  align?: "above" | "below";
+  // NEW (optional)
+  shape?: "up" | "down" | "circle";
+  size?: number;
+  stroke?: string;
+  strokeWidth?: number;
 };
+
 
 
 
@@ -126,13 +132,21 @@ function createRunnerWorker(): Worker {
         symbol: spec.symbol,
         timeframe: spec.timeframe,
         getBars: (s, tf) => rpc('getBars', { symbol: s, timeframe: tf }),
-        plot: {
-          line: (id, series, opts) => rpc('plot:line', { id, series, opts }),
-          bands: (id, series, opts) => rpc('plot:bands', { id, series, opts }),
-          histogram: (id, series, opts) => rpc('plot:histogram', { id, series, opts }),
-          boxes: (id, boxes, opts) => rpc('plot:boxes', { id, boxes, opts }),
-          labels: (id, labels, opts) => rpc('plot:labels', { id, labels, opts }),   // NEW: labels
-        },
+plot: {
+  line: (id, series, opts) => rpc('plot:line', { id, series, opts }),
+  bands: (id, series, opts) => rpc('plot:bands', { id, series, opts }),
+  histogram: (id, series, opts) => rpc('plot:histogram', { id, series, opts }),
+  boxes: (id, boxes, opts) => rpc('plot:boxes', { id, boxes, opts }),
+  labels: (id, labels, opts) => rpc('plot:labels', { id, labels, opts }),
+
+  // TEMPORARY stubs so bad calls don’t crash your session:
+  segments: () => { throw new Error('env.plot.segments is not supported yet'); },
+  rays:      () => { throw new Error('env.plot.rays is not supported yet'); },
+  arrows:    () => { throw new Error('env.plot.arrows is not supported yet'); },
+  polys:     () => { throw new Error('env.plot.polys is not supported yet'); },
+  fibs:      () => { throw new Error('env.plot.fibs is not supported yet'); },
+},
+
         attachments: {
           list: () => rpc('attachments:list', {}),
           csv: (name) => rpc('attachments:csv', { name }),
@@ -298,32 +312,42 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
             plots.histogram(params.id as string, params.series as { time: number; value: number }[], params.opts || {});
             return reply(true);
           }
-          case "plot:boxes": {
-            plots.boxes(
-              params.id as string,
-              params.boxes as { from: number; to: number; top: number; bottom: number }[],
-              params.opts || {}
-            );
-            return reply(true);
-          }
+case "plot:boxes": {
+  console.log("[EditorRunnerPanel] plot:boxes", params?.id, Array.isArray(params?.boxes) ? params.boxes.length : params?.boxes, params?.opts);
+  if (typeof plots.boxes !== "function") {
+    console.warn("[EditorRunnerPanel] plots.boxes is NOT a function for view", viewId);
+  }
+  plots.boxes?.(
+    params.id as string,
+    params.boxes as { from: number; to: number; top: number; bottom: number }[],
+    params.opts || {}
+  );
+  return reply(true);
+}
+
           // NEW: labels
-          case "plot:labels": {
-            // params.labels is whatever user code produced (Label[])
-            const raw = (params?.labels || []) as Label[];
+case "plot:labels": {
+  const raw = (params?.labels || []) as Label[];
 
-            // Coerce to the strict IndicatorLabel[] your overlay store expects
-            const safe = raw.map((l) => ({
-              time: l.time,                        // keep your unit (ms) consistent with your Drawer usage
-              price: l.price,
-              text: l.text ?? "",                  // <-- make required
-              color: l.color ?? "#ffffff",         // sensible default
-              bg: l.bg ?? "rgba(0,0,0,0.6)",       // sensible default
-              align: l.align ?? "above" as const,  // default alignment
-            }));
+  const safe = raw.map((l) => ({
+    time: l.time,
+    price: l.price,
+    text: l.text ?? "",                // keep your strict text
+    color: l.color ?? "#ffffff",
+    bg: l.bg ?? "rgba(0,0,0,0.6)",
+    align: (l.align ?? "above"),
 
-            plots.labels(params.id as string, safe); // opts not used by store, so omit or pass {}
-            return reply(true);
-          }
+    // NEW
+    shape: l.shape as ("up" | "down" | "circle") | undefined,
+    size: typeof l.size === "number" ? l.size : undefined,
+    stroke: typeof (l as any).stroke === "string" ? (l as any).stroke : undefined,
+    strokeWidth: typeof (l as any).strokeWidth === "number" ? (l as any).strokeWidth : undefined,
+  }));
+
+  plots.labels(params.id as string, safe);
+  return reply(true);
+}
+
 
           case "attachments:list": {
             const list = env.listAttachments ? await env.listAttachments() : [];
@@ -674,6 +698,33 @@ module.exports = async (env) => {
           {tab === "api" && (
             <div className="p-3 text-xs leading-5 overflow-auto">
               <pre className="whitespace-pre-wrap">{`module.exports = async function main(env) { /* … */ }
+              // Indicator Runtime (seconds-based)
+type Bar = { time: number; open: number; high: number; low: number; close: number; volume?: number };
+
+type Box = { from: number; to: number; top: number; bottom: number };
+type BoxStyle = { fill?: string; stroke?: string; lineWidth?: number; z?: number };
+
+type Label = {
+  time: number; price: number; text: string;
+  color?: string; bg?: string; align?: "above" | "below" | "left" | "right" | "center";
+  font?: string; paddingX?: number; paddingY?: number; z?: number;
+};
+
+env = {
+  symbol: string,
+  timeframe: string,
+  getBars(symbol?: string, tf?: string): Promise<Bar[]>,
+  plot: {
+    line(id: string, series: {time:number; value:number}[], opts?: any): Promise<void>,
+    bands(id: string, series: {time:number; upper:number; basis:number; lower:number}[], opts?: any): Promise<void>,
+    histogram(id: string, series: {time:number; value:number}[], opts?: any): Promise<void>,
+    boxes(id: string, boxes: Box[], style?: BoxStyle): Promise<void>,   // seconds
+    labels(id: string, labels: Label[], opts?: any): Promise<void>,     // seconds
+  },
+  attachments: { list(): Promise<string[]>; csv(name: string): Promise<{columns:string[]; rows:any[]}>; },
+  utils: { sma(arr:number[],len:number):number[]; ema(...):number[]; rsi(...):number[]; },
+};
+
 // or: export default async function main(env) { /* … */ }
 
 type Bar = { time: number; open: number; high: number; low: number; close: number; volume?: number };
