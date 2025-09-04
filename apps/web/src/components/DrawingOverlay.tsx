@@ -237,16 +237,16 @@ export default function DrawingOverlay({
         .filter(([, p]) => Array.isArray(p.boxes) && p.boxes.length > 0)
         .sort(([, a], [, b]) => ((a.style?.z ?? 0) - (b.style?.z ?? 0)));
 
-      for (const [id, payload] of boxEntries) {
+      for (const [_id, payload] of boxEntries) {
         const { boxes, style } = payload;
         const stroke = style?.stroke ?? "rgba(255,215,0,1)";
         const fill = style?.fill ?? "rgba(255,215,0,0.45)";
         const lw = style?.lineWidth ?? 2;
 
         if (!boxes || boxes.length === 0) continue;
-        const fb = boxes[0];
-        const X1 = timeToX(toSec(fb.from));
-        const X2 = timeToX(toSec(fb.to));
+        //const fb = boxes[0];
+        //const X1 = timeToX(toSec(fb.from));
+        //const X2 = timeToX(toSec(fb.to));
         // debug log:
         // console.log("[overlay.box] first", { id, from: fb.from, to: fb.to, X1, X2, top: fb.top, bottom: fb.bottom });
 
