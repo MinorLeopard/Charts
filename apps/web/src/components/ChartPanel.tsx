@@ -68,7 +68,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
   // Built-ins selection
   const selectedMap = useIndicatorStore((s) => s.selected);
   const toggleBuiltin = useIndicatorStore((s) => s.toggle);
-  const selectedIndicators = selectedMap[viewId] ?? [];
+  const selectedIndicators = useMemo(() => selectedMap[viewId] ?? [], [selectedMap, viewId]);
 
   // Custom indicators
   const customSelected = useCustomIndicatorStore((s) => s.listForView(viewId));
@@ -288,7 +288,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       const s = overlaySeriesRef.current[key];
       if (s && api) {
         try {
-          api.chart.removeSeries(s as any);
+          api.chart.removeSeries(s as unknown as ISeriesApi<"Line">);
         } catch {
           // ignore
         }
@@ -301,12 +301,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
   /** Clear any panel-created series that start with a custom indicator prefix. */
   const clearCustomSeriesByPrefix = useCallback(
     (indicatorId: string) => {
-      const prefixes = [
-        `line:${indicatorId}::`,
-        `bands:${indicatorId}::`,
-        `hist:${indicatorId}::`,
-        `box:${indicatorId}::`,
-      ];
+      const prefixes = [`line:${indicatorId}::`, `bands:${indicatorId}::`, `hist:${indicatorId}::`, `box:${indicatorId}::`];
       Object.keys(overlaySeriesRef.current).forEach((k) => {
         if (prefixes.some((p) => k.startsWith(p))) removeSeriesKey(k);
       });
@@ -372,12 +367,12 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
         l?.setData(toL);
       },
       histogram: (id, series, opts) => {
-        const s = ensureHist(`hist:${id}`, ((opts?.priceScaleId as string) ?? "right"));
+        const s = ensureHist(`hist:${id}`, (opts?.priceScaleId as string) ?? "right");
         s?.setData(
           series.map((p) => ({
             time: (p.time / 1000) as UTCTimestamp,
             value: p.value,
-            color: opts?.color as string | undefined,
+            color: (opts?.color as string) ?? undefined,
           }))
         );
       },
@@ -415,7 +410,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
 
     return () => {
       plotRegistryUnregister(vId);
-      // optional: remove lingering series for this viewId if you key them with viewId in the id
+      // optional: remove lingering series for this viewId if keyed by viewId
     };
   }, [api, panelId, ensureLine, ensureHist, plotRegistryRegister, plotRegistryUnregister]);
 
@@ -532,9 +527,9 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
         sVal = sVal == null ? p.value : p.value * k + (sVal as number) * (1 - k);
         sig.push({ time: p.time, value: sVal });
       }
-      const hist: MacdPoint[] = macd.map((p, i) => {
+      const hist: MacdPoint[] = macd.map((pt, i) => {
         const sv = sig[i]?.value ?? 0;
-        return { time: p.time, value: p.value - sv };
+        return { time: pt.time, value: pt.value - sv };
       });
       return { macd, signal: sig, hist };
     },
@@ -699,21 +694,20 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
 
   // ===== Run selected CUSTOM indicators (saved ones) =====
   // Runs whenever customSelections change or chart context changes.
+  const prevCustomSelRef = useRef<string[]>([]);
   useEffect(() => {
     if (!api || !effectiveSymbol) return;
     const bars = barsRef.current ?? [];
     if (bars.length === 0) return;
 
     // detect removals (to clear their series/overlays immediately)
-    const prevRef = (ChartPanel as any)._prevCustomSelRef || ({ current: [] } as { current: string[] });
-    (ChartPanel as any)._prevCustomSelRef = prevRef;
-    const prev = prevRef.current as string[];
+    const prev = prevCustomSelRef.current;
     const removed = prev.filter((id) => !customSelected.includes(id));
     removed.forEach((id) => {
       overlayClearByPrefix(viewId, `${id}::`);
       clearCustomSeriesByPrefix(id);
     });
-    prevRef.current = customSelected.slice();
+    prevCustomSelRef.current = customSelected.slice();
 
     // run all currently selected customs
     const workers: Worker[] = [];
@@ -799,10 +793,18 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       workers.push(worker);
 
       // Wire RPCs into panel via plot registry
-      const rpcHandler = async (ev: MessageEvent) => {
-        const msg = ev.data as any;
-        if (!msg || !msg.__rpc) return;
-        const { id: rpcId, method, params } = msg;
+      const rpcHandler = async (ev: MessageEvent<unknown>) => {
+        const msg = ev.data as unknown;
+        const isRpc =
+          !!msg && typeof msg === "object" && "__rpc" in (msg as Record<string, unknown>) && (msg as { __rpc?: unknown }).__rpc === true;
+        if (!isRpc) return;
+
+        const { id: rpcId, method, params } = msg as {
+          __rpc: true;
+          id: string;
+          method: string;
+          params?: unknown;
+        };
 
         const reply = (result?: unknown, error?: string) =>
           worker.postMessage({ __rpc: true, id: rpcId, result, error });
@@ -827,18 +829,33 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
             case "plot:boxes":
             case "plot:labels": {
               const prefix = `${indicatorId}::`;
-              const id = String(params.id);
+              const id = String((params as { id: string }).id);
               const nsId = id.startsWith(prefix) ? id : prefix + id;
-              const reg = usePlotRegistry.getState().get(viewId);
+              const reg: PlotAdapter | undefined = usePlotRegistry.getState().get(viewId);
               if (!reg) {
                 reply(undefined, "No plot adapter");
                 break;
               }
-              if (method === "plot:line") reg.line(nsId, params.series, params.opts);
-              if (method === "plot:bands") reg.bands(nsId, params.series, params.opts);
-              if (method === "plot:histogram") reg.histogram(nsId, params.series, params.opts);
-              if (method === "plot:boxes") reg.boxes(nsId, params.boxes, params.opts);
-              if (method === "plot:labels") reg.labels(nsId, params.labels, params.opts);
+              if (method === "plot:line") {
+                const p = params as { series: { time: number; value: number }[]; opts?: Record<string, unknown> };
+                reg.line(nsId, p.series, p.opts);
+              }
+              if (method === "plot:bands") {
+                const p = params as { series: { time: number; upper: number; basis: number; lower: number }[]; opts?: Record<string, unknown> };
+                reg.bands(nsId, p.series, p.opts);
+              }
+              if (method === "plot:histogram") {
+                const p = params as { series: { time: number; value: number }[]; opts?: Record<string, unknown> };
+                reg.histogram(nsId, p.series, p.opts);
+              }
+              if (method === "plot:boxes") {
+                const p = params as { boxes: { from: number; to: number; top: number; bottom: number }[]; opts?: Record<string, unknown> };
+                reg.boxes(nsId, p.boxes, p.opts);
+              }
+              if (method === "plot:labels") {
+                const p = params as { labels: Array<{ time: number; price: number; text?: string; color?: string; bg?: string; align?: "above" | "below"; shape?: "up" | "down" | "circle"; size?: number; stroke?: string; strokeWidth?: number }>; opts?: Record<string, unknown> };
+                reg.labels(nsId, p.labels, p.opts);
+              }
               reply(true);
               break;
             }
@@ -850,8 +867,8 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
             default:
               reply(undefined, `Unknown method: ${String(method)}`);
           }
-        } catch (err: any) {
-          reply(undefined, String(err?.message || err));
+        } catch (err: unknown) {
+          reply(undefined, err instanceof Error ? err.message : String(err));
         }
       };
       worker.addEventListener("message", rpcHandler);
@@ -895,12 +912,8 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
         <span className="font-semibold">{panel.symbol ?? (fallbackDemo ? "DEMO" : "—")}</span>
         {ohlc && (
           <>
-            <span>{formatTime(ohlc.time)}</span>
-            <span>O: {ohlc.o}</span>
-            <span>H: {ohlc.h}</span>
-            <span>L: {ohlc.l}</span>
-            <span>C: {ohlc.c}</span>
-            <span>V: {formatVol(ohlc.v)}</span>
+            <span>{formatTime(ohlc.time)}</span> <span>O: {ohlc.o}</span> <span>H: {ohlc.h}</span>{" "}
+            <span>L: {ohlc.l}</span> <span>C: {ohlc.c}</span> <span>V: {formatVol(ohlc.v)}</span>
           </>
         )}
       </div>
@@ -908,9 +921,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       {/* indicator chips row (below OHLC) */}
       {(selectedIndicators.length > 0 || customSelected.length > 0) && (
         <div className="absolute left-2 top-6 z-20 text-[10px] flex flex-wrap gap-1">
-          {[...selectedIndicators.map((id) => ({ id, kind: "builtin" as const, label: id.toUpperCase() })), 
-            ...customSelected.map((id) => ({ id, kind: "custom" as const, label: customRegistry[id]?.name ?? id }))
-          ].map((chip) => (
+          {chips.map((chip) => (
             <span
               key={`${chip.kind}:${chip.id}`}
               className="inline-flex items-center gap-1 px-2 py-[2px] rounded-md border border-white/20 bg-white/10"

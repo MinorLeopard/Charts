@@ -6,7 +6,7 @@ type State = {
   list: string[];
   add: (file: File) => Promise<CsvManifest>;
   refresh: () => Promise<void>;
-  getCsvByName: (name: string) => Promise<{ columns: string[]; rows: any[] }>;
+  getCsvByName: (name: string) => Promise<{ columns: string[]; rows: Record<string, string>[] }>;
 };
 
 export const useAttachmentsStore = create<State>((set, get) => ({

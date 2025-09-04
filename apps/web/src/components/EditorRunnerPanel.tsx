@@ -31,13 +31,11 @@ export type EditorRunnerPanelProps = {
     timeframe: string;
     getBars: (symbol?: string, tf?: string) => Promise<Bar[]>;
     listAttachments?: () => Promise<string[]>;
-    getCsvAttachment?: (name: string) => Promise<{ columns: string[]; rows: any[] }>;
+    getCsvAttachment?: (name: string) => Promise<{ columns: string[]; rows: Record<string, string>[] }>;
   };
   plots: PlotAdapter;
-
   // Kept optional to silence any legacy prop usage from the shell
   onApplyAsIndicator?: (args: { name: string; code: string; viewId: string }) => Promise<void>;
-
   initialCode?: string;
 };
 
@@ -98,7 +96,7 @@ function Tabs<T extends string>({
 function createRunnerWorker(): Worker {
   const src = `
     function compile(code){
-      const wrapped = \`"use strict"; let exports = {}; let module = { exports };\\n\` + code +
+      const wrapped = \`"use strict"; let exports = {}; let module = { exports };\n\` + code +
         \`\\n; const __exp = module.exports && module.exports.default ? module.exports.default : module.exports; return __exp;\`;
       return new Function(wrapped);
     }
@@ -206,6 +204,54 @@ module.exports = async (env) => {
 };
 `;
 
+type RpcEnvelope =
+  | { __rpc: true; id: string; method: "getBars"; params: { symbol?: string; timeframe?: string } }
+  | {
+      __rpc: true;
+      id: string;
+      method: "plot:line";
+      params: { id: string; series: { time: number; value: number }[]; opts?: Record<string, unknown> };
+    }
+  | {
+      __rpc: true;
+      id: string;
+      method: "plot:bands";
+      params: {
+        id: string;
+        series: { time: number; upper: number; basis: number; lower: number }[];
+        opts?: Record<string, unknown>;
+      };
+    }
+  | {
+      __rpc: true;
+      id: string;
+      method: "plot:histogram";
+      params: { id: string; series: { time: number; value: number }[]; opts?: Record<string, unknown> };
+    }
+  | {
+      __rpc: true;
+      id: string;
+      method: "plot:boxes";
+      params: { id: string; boxes: { from: number; to: number; top: number; bottom: number }[]; opts?: Record<string, unknown> };
+    }
+  | {
+      __rpc: true;
+      id: string;
+      method: "plot:labels";
+      params: { id: string; labels: Label[]; opts?: Record<string, unknown> };
+    }
+  | { __rpc: true; id: string; method: "attachments:list"; params: Record<string, never> }
+  | { __rpc: true; id: string; method: "attachments:csv"; params: { name: string } };
+
+type DoneMessage = { type: "done"; error?: string; timedOut?: boolean };
+
+function isRpcEnvelope(x: unknown): x is RpcEnvelope {
+  return !!x && typeof x === "object" && "__rpc" in x && (x as { __rpc?: unknown }).__rpc === true;
+}
+function isDoneMessage(x: unknown): x is DoneMessage {
+  return !!x && typeof x === "object" && "type" in x && (x as { type?: unknown }).type === "done";
+}
+
 export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const { viewId, getActiveChartEnv, plots, initialCode } = props;
 
@@ -259,19 +305,17 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   useEffect(() => {
     const w = createRunnerWorker();
     workerRef.current = w;
-    const handleMessage = (ev: MessageEvent) => {
-      const msg = ev.data as any;
-      if (!msg) return;
-      if (msg.type === "done") {
-        setRunning(false);
-        if (!msg.error && !msg.timedOut) {
-          setLastOk(Date.now());
-          setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ✅ Completed`].slice(-400));
-        } else if (msg.timedOut) {
-          setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ⏱️ Timed out`].slice(-400));
-        } else if (msg.error) {
-          setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ❌ Error: ${msg.error}`].slice(-400));
-        }
+    const handleMessage = (ev: MessageEvent<unknown>) => {
+      const msg = ev.data;
+      if (!isDoneMessage(msg)) return;
+      setRunning(false);
+      if (!msg.error && !msg.timedOut) {
+        setLastOk(Date.now());
+        setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ✅ Completed`].slice(-400));
+      } else if (msg.timedOut) {
+        setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ⏱️ Timed out`].slice(-400));
+      } else if (msg.error) {
+        setConsoleLines((l) => [...l, `[${new Date().toLocaleTimeString()}] ❌ Error: ${msg.error}`].slice(-400));
       }
     };
     w.addEventListener("message", handleMessage);
@@ -287,9 +331,9 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
     const w = workerRef.current;
     if (!w) return;
 
-    const onMessage = async (ev: MessageEvent) => {
-      const msg = ev.data as any;
-      if (!msg || !msg.__rpc) return;
+    const onMessage = async (ev: MessageEvent<unknown>) => {
+      const msg = ev.data;
+      if (!isRpcEnvelope(msg)) return;
       const { id, method, params } = msg;
 
       const env = getActiveChartEnv();
@@ -301,45 +345,51 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
       try {
         switch (method) {
           case "getBars": {
-            const out = await env.getBars(params?.symbol || env.symbol, params?.timeframe || env.timeframe);
+            const p = params as { symbol?: string; timeframe?: string };
+            const out = await env.getBars(p?.symbol || env.symbol, p?.timeframe || env.timeframe);
             return reply(out);
           }
           case "plot:line": {
-            const pid = String(params.id);
+            const p = params as { id: string; series: { time: number; value: number }[]; opts?: Record<string, unknown> };
+            const pid = String(p.id);
             const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
-            plots.line(nid, params.series as { time: number; value: number }[], params.opts || {});
+            plots.line(nid, p.series, p.opts || {});
             return reply(true);
           }
           case "plot:bands": {
-            const pid = String(params.id);
+            const p = params as {
+              id: string;
+              series: { time: number; upper: number; basis: number; lower: number }[];
+              opts?: Record<string, unknown>;
+            };
+            const pid = String(p.id);
             const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
-            plots.bands(
-              nid,
-              params.series as { time: number; upper: number; basis: number; lower: number }[],
-              params.opts || {}
-            );
+            plots.bands(nid, p.series, p.opts || {});
             return reply(true);
           }
           case "plot:histogram": {
-            const pid = String(params.id);
+            const p = params as { id: string; series: { time: number; value: number }[]; opts?: Record<string, unknown> };
+            const pid = String(p.id);
             const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
-            plots.histogram(nid, params.series as { time: number; value: number }[], params.opts || {});
+            plots.histogram(nid, p.series, p.opts || {});
             return reply(true);
           }
           case "plot:boxes": {
-            const pid = String(params.id);
+            const p = params as {
+              id: string;
+              boxes: { from: number; to: number; top: number; bottom: number }[];
+              opts?: Record<string, unknown>;
+            };
+            const pid = String(p.id);
             const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
-            plots.boxes?.(
-              nid,
-              params.boxes as { from: number; to: number; top: number; bottom: number }[],
-              params.opts || {}
-            );
+            plots.boxes?.(nid, p.boxes, p.opts || {});
             return reply(true);
           }
           case "plot:labels": {
-            const pid = String(params.id);
+            const p = params as { id: string; labels: Label[]; opts?: Record<string, unknown> };
+            const pid = String(p.id);
             const nid = pid.startsWith(currentNsRef.current) ? pid : currentNsRef.current + pid;
-            const raw = (params?.labels || []) as Label[];
+            const raw = (p?.labels || []) as Label[];
             const safe = raw.map((l) => ({
               time: l.time,
               price: l.price,
@@ -347,10 +397,10 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
               color: l.color ?? "#ffffff",
               bg: l.bg ?? "rgba(0,0,0,0.6)",
               align: l.align ?? "above",
-              shape: l.shape as "up" | "down" | "circle" | undefined,
+              shape: l.shape,
               size: typeof l.size === "number" ? l.size : undefined,
-              stroke: typeof (l as any).stroke === "string" ? (l as any).stroke : undefined,
-              strokeWidth: typeof (l as any).strokeWidth === "number" ? (l as any).strokeWidth : undefined,
+              stroke: typeof l.stroke === "string" ? l.stroke : undefined,
+              strokeWidth: typeof l.strokeWidth === "number" ? l.strokeWidth : undefined,
             }));
             plots.labels(nid, safe);
             return reply(true);
@@ -360,15 +410,17 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
             return reply(list);
           }
           case "attachments:csv": {
+            const p = params as { name: string };
             if (!env.getCsvAttachment) return reply(undefined, "attachments are not enabled");
-            const res = await env.getCsvAttachment(params.name as string);
+            const res = await env.getCsvAttachment(p.name);
             return reply(res);
           }
           default:
             return reply(undefined, `Unknown method: ${String(method)}`);
         }
-      } catch (err: any) {
-        return reply(undefined, String(err?.message || err));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return reply(undefined, message);
       }
     };
 
@@ -410,7 +462,9 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
     });
 
     setConsoleLines((l) =>
-      [...l, `[${new Date().toLocaleTimeString()}] 💾 Saved "${indicatorName}" (v${(existing?.version ?? 0) + 1})`].slice(-400)
+      [...l, `[${new Date().toLocaleTimeString()}] 💾 Saved "${indicatorName}" (v${(existing?.version ?? 0) + 1})`].slice(
+        -400
+      )
     );
     return id;
   }, [allCustom, code, upsertCustom, ensureIndicatorName]);
@@ -455,7 +509,9 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
       const pct = Math.max(20, Math.min(80, (y / rect.height) * 100));
       setHeightPct(pct);
     };
-    const stop = () => { isDragging.current = false; };
+    const stop = () => {
+      isDragging.current = false;
+    };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", stop);
     return () => {
@@ -487,14 +543,25 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
           <Btn small onClick={runOnActive} disabled={running}>
             {running ? "Running…" : "Run on Active Chart"}
           </Btn>
-          <Btn small variant="ghost" onClick={async (ev) => { ev.preventDefault(); await saveIndicator(); }}>
+          <Btn
+            small
+            variant="ghost"
+            onClick={async (ev) => {
+              ev.preventDefault();
+              await saveIndicator();
+            }}
+          >
             Save
           </Btn>
           {lastOk && <span className="text-xs text-emerald-400">OK {new Date(lastOk).toLocaleTimeString()}</span>}
         </div>
       </div>
 
-      <div ref={containerRef} className="h-full grid" style={{ gridTemplateRows: `${heightPct}% 6px ${100 - heightPct}%` }}>
+      <div
+        ref={containerRef}
+        className="h-full grid"
+        style={{ gridTemplateRows: `${heightPct}% 6px ${100 - heightPct}%` }}
+      >
         <div>
           <Monaco
             height="100%"
@@ -508,7 +575,9 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
 
         <div
           className="h-1 cursor-row-resize bg-white/15 hover:bg-white/25"
-          onMouseDown={() => { isDragging.current = true; }}
+          onMouseDown={() => {
+            isDragging.current = true;
+          }}
           title="Drag to resize"
         />
 
@@ -536,11 +605,16 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
           {/* Snippets */}
           {tab === "snippets" && (
             <div className="p-3 grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-              <SnippetCard title="Overlay: BB (20,2)" onUse={() => setCode(DEFAULT_SAMPLE)} onCopy={() => navigator.clipboard.writeText(DEFAULT_SAMPLE)} />
+              <SnippetCard
+                title="Overlay: BB (20,2)"
+                onUse={() => setCode(DEFAULT_SAMPLE)}
+                onCopy={() => navigator.clipboard.writeText(DEFAULT_SAMPLE)}
+              />
               <SnippetCard
                 title="Overlay: SMA(50)"
-                onUse={() => setCode(
-`module.exports = async (env) => {
+                onUse={() =>
+                  setCode(
+                    `module.exports = async (env) => {
   const bars = await env.getBars();
   const closes = bars.map(b => b.close);
   const sma = env.utils.sma(closes, 50);
@@ -548,9 +622,11 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const series = sma.map((v, i) => ({ time: bars[i + offset].time, value: v }));
   await env.plot.line('sma50', series);
 };`
-                )}
-                onCopy={() => navigator.clipboard.writeText(
-`module.exports = async (env) => {
+                  )
+                }
+                onCopy={() =>
+                  navigator.clipboard.writeText(
+                    `module.exports = async (env) => {
   const bars = await env.getBars();
   const closes = bars.map(b => b.close);
   const sma = env.utils.sma(closes, 50);
@@ -558,12 +634,14 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const series = sma.map((v, i) => ({ time: bars[i + offset].time, value: v }));
   await env.plot.line('sma50', series);
 };`
-                )}
+                  )
+                }
               />
               <SnippetCard
                 title="Histogram: RSI(14)"
-                onUse={() => setCode(
-`module.exports = async (env) => {
+                onUse={() =>
+                  setCode(
+                    `module.exports = async (env) => {
   const bars = await env.getBars();
   const closes = bars.map(b => b.close);
   const r = env.utils.rsi(closes, 14);
@@ -571,9 +649,11 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const series = r.map((v, i) => ({ time: bars[i + offset].time, value: v }));
   await env.plot.histogram('rsi14', series);
 };`
-                )}
-                onCopy={() => navigator.clipboard.writeText(
-`module.exports = async (env) => {
+                  )
+                }
+                onCopy={() =>
+                  navigator.clipboard.writeText(
+                    `module.exports = async (env) => {
   const bars = await env.getBars();
   const closes = bars.map(b => b.close);
   const r = env.utils.rsi(closes, 14);
@@ -581,12 +661,14 @@ export default function EditorRunnerPanel(props: EditorRunnerPanelProps) {
   const series = r.map((v, i) => ({ time: bars[i + offset].time, value: v }));
   await env.plot.histogram('rsi14', series);
 };`
-                )}
+                  )
+                }
               />
               <SnippetCard
                 title="CSV → Boxes"
-                onUse={() => setCode(
-`// zones.csv columns: from,to,top,bottom  (times in ms or sec)
+                onUse={() =>
+                  setCode(
+                    `// zones.csv columns: from,to,top,bottom  (times in ms or sec)
 module.exports = async (env) => {
   const files = await env.attachments.list();
   if (!files.includes("zones.csv")) throw new Error("Attach zones.csv first");
@@ -599,9 +681,10 @@ module.exports = async (env) => {
 
   await env.plot.boxes("csv-zones", boxes);
 };`
-                )}
-                onCopy={() => navigator.clipboard.writeText(
-`// zones.csv columns: from,to,top,bottom  (times in ms or sec)
+                  )
+                }
+                onCopy={() =>
+                  navigator.clipboard.writeText(`// zones.csv columns: from,to,top,bottom  (times in ms or sec)
 module.exports = async (env) => {
   const files = await env.attachments.list();
   if (!files.includes("zones.csv")) throw new Error("Attach zones.csv first");
@@ -613,14 +696,14 @@ module.exports = async (env) => {
   })).filter(b => Number.isFinite(b.from) && Number.isFinite(b.to));
 
   await env.plot.boxes("csv-zones", boxes);
-};`
-                )}
+};`)
+                }
               />
               {/* Labels smoke tests */}
               <SnippetCard
                 title="Labels: Hello on last bar"
-                onUse={() => setCode(
-`module.exports = async (env) => {
+                onUse={() =>
+                  setCode(`module.exports = async (env) => {
   const bars = await env.getBars();
   if (!bars.length) return;
   const last = bars[bars.length - 1];
@@ -633,10 +716,10 @@ module.exports = async (env) => {
     color: "#fff",
     size: 12
   }]);
-};`
-                )}
-                onCopy={() => navigator.clipboard.writeText(
-`module.exports = async (env) => {
+};`)
+                }
+                onCopy={() =>
+                  navigator.clipboard.writeText(`module.exports = async (env) => {
   const bars = await env.getBars();
   if (!bars.length) return;
   const last = bars[bars.length - 1];
@@ -649,13 +732,13 @@ module.exports = async (env) => {
     color: "#fff",
     size: 12
   }]);
-};`
-                )}
+};`)
+                }
               />
               <SnippetCard
                 title="Labels: RSI crosses 30/70"
-                onUse={() => setCode(
-`module.exports = async (env) => {
+                onUse={() =>
+                  setCode(`module.exports = async (env) => {
   const bars = await env.getBars();
   if (bars.length < 15) return;
   const closes = bars.map(b => b.close);
@@ -675,10 +758,10 @@ module.exports = async (env) => {
     }
   }
   await env.plot.labels("rsi-cross", labels);
-};`
-                )}
-                onCopy={() => navigator.clipboard.writeText(
-`module.exports = async (env) => {
+};`)
+                }
+                onCopy={() =>
+                  navigator.clipboard.writeText(`module.exports = async (env) => {
   const bars = await env.getBars();
   if (bars.length < 15) return;
   const closes = bars.map(b => b.close);
@@ -697,8 +780,8 @@ module.exports = async (env) => {
     }
   }
   await env.plot.labels("rsi-cross", labels);
-};`
-                )}
+};`)
+                }
               />
             </div>
           )}
@@ -708,7 +791,12 @@ module.exports = async (env) => {
             <div className="p-3 grid gap-3 overflow-auto">
               <div className="flex items-center gap-2">
                 <label className="text-sm">Upload CSV:</label>
-                <input type="file" accept=".csv,text/csv" onChange={(e) => onUploadFiles(e.target.files)} className="text-xs" />
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(e) => onUploadFiles(e.target.files)}
+                  className="text-xs"
+                />
               </div>
 
               <div className="border border-white/15 rounded-md p-2">
@@ -717,13 +805,17 @@ module.exports = async (env) => {
                   <div className="text-xs opacity-70">No CSVs attached yet.</div>
                 ) : (
                   <ul className="text-xs list-disc pl-5">
-                    {attachList.map((name) => (
-                      <li key={name}><code>{name}</code></li>
+                    {attachList.map((nm) => (
+                      <li key={nm}>
+                        <code>{nm}</code>
+                      </li>
                     ))}
                   </ul>
                 )}
                 <div className="mt-2">
-                  <Btn small variant="ghost" onClick={() => attachRefresh()}>Refresh</Btn>
+                  <Btn small variant="ghost" onClick={() => attachRefresh()}>
+                    Refresh
+                  </Btn>
                 </div>
               </div>
 
@@ -749,7 +841,7 @@ module.exports = async (env) => {
           {tab === "api" && (
             <div className="p-3 text-xs leading-5 overflow-auto">
               <pre className="whitespace-pre-wrap">{`module.exports = async function main(env) { /* … */ }
-              
+
 type Bar = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 
 type Box = { from: number; to: number; top: number; bottom: number };
@@ -773,7 +865,7 @@ env = {
     boxes(id: string, boxes: Box[], style?: BoxStyle): Promise<void>,
     labels(id: string, labels: Label[], opts?: any): Promise<void>,
   },
-  attachments: { list(): Promise<string[]>; csv(name: string): Promise<{columns:string[]; rows:any[]}>; },
+  attachments: { list(): Promise<string[]>; csv(name: string): Promise<{columns:string[]; rows:Record<string,string>[]}>; },
   utils: { sma(arr:number[],len:number):number[]; ema(arr:number[],len:number):number[]; rsi(arr:number[],len?:number):number[]; },
 };
 
@@ -791,8 +883,12 @@ function SnippetCard({ title, onUse, onCopy }: { title: string; onUse: () => voi
     <div className="border border-white/15 rounded-md p-3">
       <div className="text-sm font-medium mb-2">{title}</div>
       <div className="flex gap-2">
-        <Btn small onClick={onUse}>Use</Btn>
-        <Btn small variant="ghost" onClick={onCopy}>Copy</Btn>
+        <Btn small onClick={onUse}>
+          Use
+        </Btn>
+        <Btn small variant="ghost" onClick={onCopy}>
+          Copy
+        </Btn>
       </div>
     </div>
   );

@@ -7,11 +7,13 @@ import { persist, createJSONStorage } from "zustand/middleware";
 export type Visibility = "private" | "public";
 
 /** Simple param schema placeholder. */
+export type ParamSpec =
+  | { type: "number"; min?: number; max?: number; step?: number; default?: number }
+  | { type: "boolean"; default?: boolean }
+  | { type: "string"; default?: string };
+
 export type ParamSchema = {
-  [key: string]:
-    | { type: "number"; min?: number; max?: number; step?: number; default?: number }
-    | { type: "boolean"; default?: boolean }
-    | { type: "string"; default?: string };
+  [key: string]: ParamSpec;
 };
 
 export type CustomIndicator = {
@@ -36,7 +38,8 @@ type State = {
   upsert: (ci: CustomIndicator) => void;
   remove: (id: string) => void;
 
-  saveCustom: (viewId: string, code: string, fn: Function) => void;
+  // Saves a brand-new custom for a given view and selects it
+  saveCustom: (viewId: string, code: string) => void;
 
   all: () => CustomIndicator[];
   byId: (id: string) => CustomIndicator | undefined;
@@ -51,6 +54,14 @@ type State = {
 };
 
 const EMPTY: string[] = [];
+
+function isPersistShape(x: unknown): x is {
+  registry?: Registry;
+  selectedByView?: SelectedByView;
+  version?: number;
+} {
+  return typeof x === "object" && x !== null;
+}
 
 export const useCustomIndicatorStore = create<State>()(
   persist(
@@ -76,7 +87,7 @@ export const useCustomIndicatorStore = create<State>()(
           return { registry: next, selectedByView: nextSel, version: s.version + 1 };
         }),
 
-      saveCustom: (viewId, code, _fn) => {
+      saveCustom: (viewId, code) => {
         const id = `custom-${Date.now()}`;
         const ci: CustomIndicator = {
           id,
@@ -123,25 +134,24 @@ export const useCustomIndicatorStore = create<State>()(
       name: "custom-indicator-store",
       storage: createJSONStorage(() => localStorage),
       version: 2,
-      migrate: (persisted: any, fromVersion) => {
-        // We only added editingId (non-persisted) and bumped version; keep existing data shape.
-        if (!persisted || typeof persisted !== "object") return { registry: {}, selectedByView: {}, version: 1 };
-        if (fromVersion < 1) {
-          // very old/unexpected; normalize
+      migrate: (persisted: unknown, fromVersion: number) => {
+        if (!isPersistShape(persisted)) {
           return { registry: {}, selectedByView: {}, version: 1 };
         }
-        // Ensure required keys exist
+        if (fromVersion < 1) {
+          return { registry: {}, selectedByView: {}, version: 1 };
+        }
         return {
           registry: persisted.registry ?? {},
           selectedByView: persisted.selectedByView ?? {},
           version: typeof persisted.version === "number" ? persisted.version : 1,
         };
       },
+      // Don't persist editingId
       partialize: (s) => ({
         registry: s.registry,
         selectedByView: s.selectedByView,
         version: s.version,
-        // editingId is intentionally NOT persisted
       }),
     }
   )

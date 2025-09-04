@@ -20,6 +20,10 @@ type ExtendedTimeScale = {
   coordinateToTime: (x: number) => Time | null;
 };
 
+type OverlayBox = { from: number; to: number; top: number; bottom: number };
+type OverlayStyle = { fill?: string; stroke?: string; lineWidth?: number; z?: number };
+type OverlayPayload = { boxes?: OverlayBox[]; labels?: Array<{ time: number; price: number; text?: string; color?: string; bg?: string; align?: "above" | "below"; shape?: "up" | "down" | "circle"; size?: number; stroke?: string; strokeWidth?: number }>; style?: OverlayStyle };
+
 function roundRectPath(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -65,7 +69,7 @@ export default function DrawingOverlay({
 
   // Indicator overlays
   const byView = useIndicatorOverlayStore((s) => s.byView);
-  const indicatorForView = useMemo(() => byView[viewId] ?? {}, [byView, viewId]);
+  const indicatorForView = useMemo(() => (byView[viewId] ?? {}) as Record<string, OverlayPayload>, [byView, viewId]);
 
   const [draft, setDraft] = useState<DrawObject | null>(null);
 
@@ -131,163 +135,139 @@ export default function DrawingOverlay({
         ctx.stroke();
       };
 
-const drawLabel = (l: {
-  time: number;
-  price: number;
-  text: string;
-  color?: string;
-  bg?: string;
-  align?: "above" | "below";
+      const drawLabel = (l: {
+        time: number;
+        price: number;
+        text: string;
+        color?: string;
+        bg?: string;
+        align?: "above" | "below";
+        shape?: "up" | "down" | "circle";
+        size?: number;
+        stroke?: string;
+        strokeWidth?: number;
+      }) => {
+        const x = timeToX(toSec(l.time));
+        if (x == null) return;
+        const y = priceToY(l.price);
 
-  // optional marker fields (we’ll read them if present)
-  shape?: "up" | "down" | "circle";
-  size?: number;
-  stroke?: string;
-  strokeWidth?: number;
-}) => {
-  const x = timeToX(toSec(l.time));
-  if (x == null) return;
-  const y = priceToY(l.price);
+        // marker
+        if (l.shape) {
+          const size = Math.max(6, Math.min(30, l.size ?? 12));
+          const fill = l.bg ?? "rgba(0,0,0,0.75)";
+          const stroke = l.stroke ?? fill;
+          const lw = l.strokeWidth ?? 1;
 
-  // --- (A) optional marker first (up/down triangle or circle)
-  if (l.shape) {
-    const size = Math.max(6, Math.min(30, l.size ?? 12));
-    const fill = l.bg ?? "rgba(0,0,0,0.75)";
-    const stroke = l.stroke ?? fill;
-    const lw = l.strokeWidth ?? 1;
+          ctx.save();
+          ctx.lineWidth = lw;
+          ctx.strokeStyle = stroke;
+          ctx.fillStyle = fill;
 
-    ctx.save();
-    ctx.lineWidth = lw;
-    ctx.strokeStyle = stroke;
-    ctx.fillStyle = fill;
+          if (l.shape === "up") {
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x - size, y + size);
+            ctx.lineTo(x + size, y + size);
+            ctx.closePath();
+            ctx.fill();
+            if (lw > 0) ctx.stroke();
+          } else if (l.shape === "down") {
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x - size, y - size);
+            ctx.lineTo(x + size, y - size);
+            ctx.closePath();
+            ctx.fill();
+            if (lw > 0) ctx.stroke();
+          } else if (l.shape === "circle") {
+            ctx.beginPath();
+            ctx.arc(x, y, size * 0.75, 0, Math.PI * 2);
+            ctx.fill();
+            if (lw > 0) ctx.stroke();
+          }
 
-    if (l.shape === "up") {
-      // upward triangle with tip at y
-      ctx.beginPath();
-      ctx.moveTo(x, y);                 // tip
-      ctx.lineTo(x - size, y + size);   // left
-      ctx.lineTo(x + size, y + size);   // right
-      ctx.closePath();
-      ctx.fill();
-      if (lw > 0) ctx.stroke();
-    } else if (l.shape === "down") {
-      // downward triangle with tip at y
-      ctx.beginPath();
-      ctx.moveTo(x, y);                 // tip
-      ctx.lineTo(x - size, y - size);   // left
-      ctx.lineTo(x + size, y - size);   // right
-      ctx.closePath();
-      ctx.fill();
-      if (lw > 0) ctx.stroke();
-    } else if (l.shape === "circle") {
-      ctx.beginPath();
-      ctx.arc(x, y, size * 0.75, 0, Math.PI * 2);
-      ctx.fill();
-      if (lw > 0) ctx.stroke();
-    }
+          ctx.restore();
+        }
 
-    ctx.restore();
-  }
+        // bubble + text
+        if (l.text && l.text.length) {
+          const paddingX = 6,
+            radius = 4,
+            pointer = 5;
 
-  // --- (B) optional bubble + text (what you already had)
-  if (l.text && l.text.length) {
-    const paddingX = 6, radius = 4, pointer = 5;
+          ctx.font = "12px ui-sans-serif, system-ui, -apple-system";
+          ctx.textBaseline = "middle";
+          const textW = ctx.measureText(l.text).width;
+          const boxW = Math.ceil(textW + paddingX * 2);
+          const boxH = 18;
 
-    ctx.font = "12px ui-sans-serif, system-ui, -apple-system";
-    ctx.textBaseline = "middle";
-    const textW = ctx.measureText(l.text).width;
-    const boxW = Math.ceil(textW + paddingX * 2);
-    const boxH = 18;
+          const above = (l.align ?? "above") === "above";
+          const bx = Math.round(x - boxW / 2);
+          const by = Math.round(above ? y - (boxH + pointer) : y + pointer);
 
-    const above = (l.align ?? "above") === "above";
-    const bx = Math.round(x - boxW / 2);
-    const by = Math.round(above ? y - (boxH + pointer) : y + pointer);
+          ctx.fillStyle = l.bg ?? "rgba(0,0,0,0.75)";
+          ctx.strokeStyle = ctx.fillStyle;
+          roundRectPath(ctx, bx, by, boxW, boxH, radius);
+          ctx.fill();
 
-    ctx.fillStyle = l.bg ?? "rgba(0,0,0,0.75)";
-    ctx.strokeStyle = ctx.fillStyle;
-    roundRectPath(ctx, bx, by, boxW, boxH, radius);
-    ctx.fill();
+          // pointer
+          ctx.beginPath();
+          if (above) {
+            ctx.moveTo(x, y);
+            ctx.lineTo(x - pointer, by + boxH);
+            ctx.lineTo(x + pointer, by + boxH);
+          } else {
+            ctx.moveTo(x, y);
+            ctx.lineTo(x - pointer, by);
+            ctx.lineTo(x + pointer, by);
+          }
+          ctx.closePath();
+          ctx.fill();
 
-    // pointer triangle for bubble
-    ctx.beginPath();
-    if (above) {
-      ctx.moveTo(x, y);
-      ctx.lineTo(x - pointer, by + boxH);
-      ctx.lineTo(x + pointer, by + boxH);
-    } else {
-      ctx.moveTo(x, y);
-      ctx.lineTo(x - pointer, by);
-      ctx.lineTo(x + pointer, by);
-    }
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.fillStyle = l.color ?? "#fff";
-    ctx.fillText(l.text, bx + paddingX, by + boxH / 2);
-  }
-};
-
+          ctx.fillStyle = l.color ?? "#fff";
+          ctx.fillText(l.text, bx + paddingX, by + boxH / 2);
+        }
+      };
 
       // ---- INDICATOR BOXES / LABELS ----
       const entries = Object.entries(indicatorForView);
-      if (entries.length) {
-        console.log("[overlay.paint] viewId=", viewId, "plots=", entries.map(([k]) => k));
 
-        // Boxes first (z-ordered), then labels
-        const boxEntries = entries.filter(([, p]) => (p as any).boxes);
-        boxEntries.sort(([, a], [, b]) => (((a as any)?.style?.z ?? 0) - ((b as any)?.style?.z ?? 0)));
+      // Boxes
+      const boxEntries = entries
+        .filter(([, p]) => Array.isArray(p.boxes) && p.boxes.length > 0)
+        .sort(([, a], [, b]) => ((a.style?.z ?? 0) - (b.style?.z ?? 0)));
 
-        for (const [id, payload] of boxEntries) {
-          const { boxes, style } = payload as any;
-          const stroke = style?.stroke ?? "rgba(255,215,0,1)";
-          const fill = style?.fill ?? "rgba(255,215,0,0.45)";
-          const lw = style?.lineWidth ?? 2;
+      for (const [id, payload] of boxEntries) {
+        const { boxes, style } = payload;
+        const stroke = style?.stroke ?? "rgba(255,215,0,1)";
+        const fill = style?.fill ?? "rgba(255,215,0,0.45)";
+        const lw = style?.lineWidth ?? 2;
 
-          if (!Array.isArray(boxes) || boxes.length === 0) continue;
-          // Log first box render math
-          const fb = boxes[0];
-          const X1 = timeToX(toSec(fb.from));
-          const X2 = timeToX(toSec(fb.to));
-          console.log("[overlay.box] first", {
-            id,
-            from: fb.from, to: fb.to,
-            X1, X2,
-            top: fb.top, bottom: fb.bottom,
-          });
+        if (!boxes || boxes.length === 0) continue;
+        const fb = boxes[0];
+        const X1 = timeToX(toSec(fb.from));
+        const X2 = timeToX(toSec(fb.to));
+        // debug log:
+        // console.log("[overlay.box] first", { id, from: fb.from, to: fb.to, X1, X2, top: fb.top, bottom: fb.bottom });
 
-          for (const bx of boxes as Array<{ from: number; to: number; top: number; bottom: number }>) {
-            const a: Point = { time: toSec(bx.from), price: Math.max(bx.top, bx.bottom) };
-            const b: Point = { time: toSec(bx.to),   price: Math.min(bx.top, bx.bottom) };
-            // inside paint(), before drawing rectangles:
-entries
-  .filter(([, payload]) => (payload as any).boxes)
-  .forEach(([pid, payload]) => {
-    const { boxes, style } = payload as any;
-    console.log("[overlay.boxes] plot", pid, "count", boxes?.length ?? 0, "first", boxes?.[0], "style", style);
-    const stroke = style?.stroke ?? "rgba(0,153,255,1)";
-    const fill   = style?.fill   ?? "rgba(0,153,255,0.35)";
-    const lw     = style?.lineWidth ?? 2;
-    for (const bx of boxes as Array<{ from:number; to:number; top:number; bottom:number }>) {
-      const a = { time: Math.floor(bx.from / 1000), price: bx.top };
-      const b = { time: Math.floor(bx.to   / 1000), price: bx.bottom };
-      drawRect(a, b, stroke, fill, lw);
-    }
-  });
-
-            drawRect(a, b, stroke, fill, lw);
-          }
-        }
-
-        const labelEntries = entries.filter(([, p]) => (p as any).labels);
-        for (const [id, payload] of labelEntries) {
-          const { labels } = payload as any;
-          if (!Array.isArray(labels) || labels.length === 0) continue;
-          console.log("[overlay.labels] plot", id, "count", labels.length, "first", labels[0]);
-          for (const l of labels) drawLabel(l);
+        for (const bx of boxes) {
+          const a: Point = { time: toSec(bx.from), price: Math.max(bx.top, bx.bottom) };
+          const b: Point = { time: toSec(bx.to), price: Math.min(bx.top, bx.bottom) };
+          drawRect(a, b, stroke, fill, lw);
         }
       }
 
-      // ---- MANUAL DRAW OBJECTS (unchanged) ----
+      // Labels
+      const labelEntries = entries.filter(([, p]) => Array.isArray(p.labels) && p.labels.length > 0);
+      for (const [id, payload] of labelEntries) {
+        const { labels } = payload;
+        if (!labels || labels.length === 0) continue;
+        // debug log:
+        // console.log("[overlay.labels] plot", id, "count", labels.length, "first", labels[0]);
+        for (const l of labels) drawLabel(l);
+      }
+
+      // ---- MANUAL DRAW OBJECTS ----
       const drawLine = (a: Point, b: Point, color = "#6aa3ff", lw = 1.5) => {
         const Ax = timeToX(a.time);
         const Bx = timeToX(b.time);
@@ -303,13 +283,22 @@ entries
       };
       const drawHLine = (yPrice: number, color = "#8aa", lw = 1) => {
         const y = priceToY(yPrice);
-        ctx.strokeStyle = color; ctx.lineWidth = lw;
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lw;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
       };
       const drawVLine = (xTimeSec: number, color = "#8aa", lw = 1) => {
-        const x = timeToX(xTimeSec); if (x == null) return;
-        ctx.strokeStyle = color; ctx.lineWidth = lw;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+        const x = timeToX(xTimeSec);
+        if (x == null) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lw;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
       };
 
       for (const o of objects) {
@@ -317,7 +306,8 @@ entries
         if (o.type === "hline") drawHLine(o.y, o.color ?? "#8aa", o.width ?? 1);
         if (o.type === "vline") drawVLine(o.x, o.color ?? "#8aa", o.width ?? 1);
         if (o.type === "rect") {
-          const a = o.a, b = o.b;
+          const a = o.a,
+            b = o.b;
           const stroke = o.color ?? "#6aa3ff";
           const fill = o.fill ?? "rgba(106,163,255,0.20)";
           const lw = o.width ?? 1;
@@ -351,7 +341,7 @@ entries
     };
   }, [api, objects, draft, priceToY, timeToX, indicatorForView, viewId]);
 
-  // --- Pointer / tool handling (unchanged) ---
+  // --- Pointer / tool handling ---
   const pickPoint = (clientX: number, clientY: number): Point | null => {
     if (!api || !hostRef.current) return null;
     const rect = hostRef.current.getBoundingClientRect();
@@ -381,22 +371,43 @@ entries
       const tol = 6;
 
       const hit = (o: DrawObject): boolean => {
-        if (o.type === "hline") { const y = priceToY(o.y); return Math.abs(Py - y) <= tol; }
-        if (o.type === "vline") { const x = timeToX(o.x);  return x != null && Math.abs(Px - x) <= tol; }
+        if (o.type === "hline") {
+          const y = priceToY(o.y);
+          return Math.abs(Py - y) <= tol;
+        }
+        if (o.type === "vline") {
+          const x = timeToX(o.x);
+          return x != null && Math.abs(Px - x) <= tol;
+        }
         if (o.type === "trendline") {
-          const Ax = timeToX(o.a.time); const Bx = timeToX(o.b.time); if (Ax == null || Bx == null) return false;
-          const Ay = priceToY(o.a.price); const By = priceToY(o.b.price);
-          const vx = Bx - Ax, vy = By - Ay; const wx = Px - Ax, wy = Py - Ay;
-          const c1 = vx * wx + vy * wy; const c2 = vx * vx + vy * vy;
-          let t = c2 ? c1 / c2 : 0; t = Math.max(0, Math.min(1, t));
-          const nx = Ax + t * vx, ny = Ay + t * vy; const dist = Math.hypot(Px - nx, Py - ny);
+          const Ax = timeToX(o.a.time);
+          const Bx = timeToX(o.b.time);
+          if (Ax == null || Bx == null) return false;
+          const Ay = priceToY(o.a.price);
+          const By = priceToY(o.b.price);
+          const vx = Bx - Ax,
+            vy = By - Ay;
+          const wx = Px - Ax,
+            wy = Py - Ay;
+          const c1 = vx * wx + vy * wy;
+          const c2 = vx * vx + vy * vy;
+          let t = c2 ? c1 / c2 : 0;
+          t = Math.max(0, Math.min(1, t));
+          const nx = Ax + t * vx,
+            ny = Ay + t * vy;
+          const dist = Math.hypot(Px - nx, Py - ny);
           return dist <= tol;
         }
         if (o.type === "rect") {
-          const Ax = timeToX(o.a.time), Bx = timeToX(o.b.time); if (Ax == null || Bx == null) return false;
-          const Ay = priceToY(o.a.price), By = priceToY(o.b.price);
-          const x1 = Math.min(Ax, Bx), x2 = Math.max(Ax, Bx);
-          const y1 = Math.min(Ay, By), y2 = Math.max(Ay, By);
+          const Ax = timeToX(o.a.time),
+            Bx = timeToX(o.b.time);
+          if (Ax == null || Bx == null) return false;
+          const Ay = priceToY(o.a.price),
+            By = priceToY(o.b.price);
+          const x1 = Math.min(Ax, Bx),
+            x2 = Math.max(Ax, Bx);
+          const y1 = Math.min(Ay, By),
+            y2 = Math.max(Ay, By);
           return Px >= x1 && Px <= x2 && Py >= y1 && Py <= y2;
         }
         return false;
@@ -407,10 +418,22 @@ entries
       return;
     }
 
-    if (tool === "hline") { setDraft({ id: "draft", viewId: `any:${panelId}`, type: "hline", y: p.price }); return; }
-    if (tool === "vline") { setDraft({ id: "draft", viewId: `any:${panelId}`, type: "vline", x: p.time }); return; }
-    if (tool === "rect")  { setDraft({ id: "draft", viewId: `any:${panelId}`, type: "rect", a: p, b: p }); return; }
-    if (tool === "trendline") { setDraft({ id: "draft", viewId: `any:${panelId}`, type: "trendline", a: p, b: p }); return; }
+    if (tool === "hline") {
+      setDraft({ id: "draft", viewId: `any:${panelId}`, type: "hline", y: p.price });
+      return;
+    }
+    if (tool === "vline") {
+      setDraft({ id: "draft", viewId: `any:${panelId}`, type: "vline", x: p.time });
+      return;
+    }
+    if (tool === "rect") {
+      setDraft({ id: "draft", viewId: `any:${panelId}`, type: "rect", a: p, b: p });
+      return;
+    }
+    if (tool === "trendline") {
+      setDraft({ id: "draft", viewId: `any:${panelId}`, type: "trendline", a: p, b: p });
+      return;
+    }
   };
 
   const onMouseMove: React.MouseEventHandler<HTMLDivElement> = (e) => {

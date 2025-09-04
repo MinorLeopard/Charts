@@ -64,34 +64,46 @@ function checksum(bytes: Uint8Array): string {
   return ("00000000" + h.toString(16)).slice(-8);
 }
 
-function parseCsv(text: string): { columns: string[]; rows: any[] } {
+function parseCsv(text: string): { columns: string[]; rows: Record<string, string>[] } {
   // Minimal CSV (commas, quotes, newlines). For speed/safety, keep it simple.
   const rows: string[][] = [];
-  let i = 0, cur = "", row: string[] = [], inQ = false;
+  let i = 0,
+    cur = "",
+    row: string[] = [],
+    inQ = false;
 
   while (i < text.length) {
     const ch = text[i++];
     if (inQ) {
       if (ch === '"') {
-        if (text[i] === '"') { cur += '"'; i++; } // escaped quote
+        if (text[i] === '"') {
+          cur += '"';
+          i++;
+        } // escaped quote
         else inQ = false;
       } else cur += ch;
     } else {
       if (ch === '"') inQ = true;
-      else if (ch === ",") { row.push(cur); cur = ""; }
-      else if (ch === "\n" || ch === "\r") {
+      else if (ch === ",") {
+        row.push(cur);
+        cur = "";
+      } else if (ch === "\n" || ch === "\r") {
         if (ch === "\r" && text[i] === "\n") i++;
-        row.push(cur); cur = "";
+        row.push(cur);
+        cur = "";
         if (row.length > 1 || row[0] !== "") rows.push(row);
         row = [];
       } else cur += ch;
     }
   }
-  if (cur.length || row.length) { row.push(cur); rows.push(row); }
+  if (cur.length || row.length) {
+    row.push(cur);
+    rows.push(row);
+  }
 
   const columns = rows.shift() ?? [];
-  const objs = rows.map(r => {
-    const o: any = {};
+  const objs = rows.map((r) => {
+    const o: Record<string, string> = {};
     for (let j = 0; j < columns.length; j++) o[columns[j]] = r[j] ?? "";
     return o;
   });
@@ -118,7 +130,7 @@ export async function listCsv(): Promise<string[]> {
   return keys();
 }
 
-export async function getCsv(name: string): Promise<{ columns: string[]; rows: any[] }> {
+export async function getCsv(name: string): Promise<{ columns: string[]; rows: Record<string, string>[] }> {
   const buf = await get(name);
   if (!buf) throw new Error(`CSV not found: ${name}`);
   const text = new TextDecoder("utf-8").decode(new Uint8Array(buf));
