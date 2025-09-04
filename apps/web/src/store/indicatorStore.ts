@@ -15,45 +15,53 @@ export const INDICATOR_IDS: readonly IndicatorId[] = [
   "macd",
 ] as const;
 
-type State = {
-  /** viewId -> selected indicators */
-  selected: Record<string, IndicatorId[]>;
-  /** bumping this can help components re-render where needed */
-  version: number;
-
-  /** Toggle a single indicator for a view */
-  toggle: (viewId: string, id: IndicatorId) => void;
-
-  /** Replace the list for a view */
-  setSelected: (viewId: string, ids: IndicatorId[]) => void;
-
-  /**
-   * Returns a stable array reference for the current list.
-   * Important: never constructs a new array unless state changed.
-   */
-  list: (viewId: string) => IndicatorId[];
+/** Display names for built-ins (used by chips UI) */
+export const INDICATOR_NAMES: Record<IndicatorId, string> = {
+  sma: "SMA(20)",
+  ema: "EMA(20)",
+  vwap: "VWAP",
+  bb: "Bollinger Bands",
+  rsi: "RSI(14)",
+  macd: "MACD(12,26,9)",
 };
 
-export const useIndicatorStore = create<State>()((set, get) => ({
-  selected: {},
+type State = {
+  version: number;
+  selected: Record<string, string[]>;
+  toggle: (viewId: string, id: string) => void;
+  /** Remove only if currently selected; no-op otherwise. */
+  removeForView: (viewId: string, id: string) => void;
+
+  activePanel: string | null;
+  setActivePanel: (id: string) => void;
+
+  /** Convenience readers */
+  listForView: (viewId: string) => string[];
+  isSelected: (viewId: string, id: string) => boolean;
+};
+
+export const useIndicatorStore = create<State>((set, get) => ({
   version: 0,
+  selected: {},
 
   toggle: (viewId, id) =>
     set((s) => {
-      const cur = s.selected[viewId] ?? EMPTY;
-      const exists = cur.includes(id);
-      const next = exists ? cur.filter((x) => x !== id) : [...cur, id];
-      return {
-        selected: { ...s.selected, [viewId]: next },
-        version: s.version + 1,
-      };
+      const cur = s.selected[viewId] ?? [];
+      const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+      return { version: s.version + 1, selected: { ...s.selected, [viewId]: next } };
     }),
 
-  setSelected: (viewId, ids) =>
-    set((s) => ({
-      selected: { ...s.selected, [viewId]: ids.slice() },
-      version: s.version + 1,
-    })),
+  removeForView: (viewId, id) =>
+    set((s) => {
+      const cur = s.selected[viewId] ?? EMPTY;
+      if (!cur.includes(id)) return s;
+      const next = cur.filter((x) => x !== id);
+      return { version: s.version + 1, selected: { ...s.selected, [viewId]: next } };
+    }),
 
-  list: (viewId) => get().selected[viewId] ?? EMPTY,
+  activePanel: null,
+  setActivePanel: (id) => set(() => ({ activePanel: id })),
+
+  listForView: (viewId) => get().selected[viewId] ?? EMPTY,
+  isSelected: (viewId, id) => (get().selected[viewId] ?? EMPTY).includes(id),
 }));

@@ -1,42 +1,78 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useIndicatorStore, type IndicatorId } from "@/store/indicatorStore";
+import { useCustomIndicatorStore } from "@/store/customIndicatorStore";
 import { useChartStore } from "@/store/chartStore";
-import {
-  useIndicatorStore,
-  INDICATOR_IDS,
-  type IndicatorId,
-} from "@/store/indicatorStore";
 
-/**
- * Minimal indicators button + popover dialog (no UI libs).
- * - Uses layout + active panel to build a stable viewId
- * - Reads/updates selection via useIndicatorStore
- */
+// Keep this typed to your IndicatorId union
+const STOCK_IDS: readonly IndicatorId[] = ["sma", "ema", "vwap", "bb", "rsi", "macd"] as const;
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="mb-3">
+      <div className="text-[11px] uppercase tracking-wide opacity-70 mb-2">{title}</div>
+      {children}
+    </div>
+  );
+}
+
 export default function IndicatorsDialog() {
-  const [open, setOpen] = useState(false);
-
   const layout = useChartStore((s) => s.layout);
-  const activePanel = useChartStore((s) => s.activePanelId ?? "p1");
-  const viewId = useMemo(() => `${layout}:${activePanel}`, [layout, activePanel]);
+  const activePanel = useChartStore((s) => s.activePanelId) ?? "p1";
+  const viewId = `${layout}:${activePanel}`;
 
-  // read the list for this view (stable array from store)
-  const list = useIndicatorStore((s) => s.list(viewId));
-  const toggle = useIndicatorStore((s) => s.toggle);
+  // ---- Local popover state ----
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<"stock" | "custom">("stock");
+  const popRef = useRef<HTMLDivElement | null>(null);
 
-  // optional: if you want a version bump to force re-render when others change the store
-  const _version = useIndicatorStore((s) => s.version);
+  // Close on outside click / ESC
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!popRef.current) return;
+      if (!popRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
 
-  const checked = useMemo(() => new Set(list), [list]);
+  // ---- Stock indicators (select fields separately to avoid new-object selector) ----
+  const stockVersion = useIndicatorStore((s) => s.version);
+  const stockSelectedMap = useIndicatorStore((s) => s.selected);
+  const toggleStock = useIndicatorStore((s) => s.toggle);
 
-  const onToggle = (id: IndicatorId) => {
-    toggle(viewId, id);
-  };
+  const stockChecked = useMemo(() => {
+    const arr = (stockSelectedMap[viewId] ?? []).filter(
+      (id): id is IndicatorId => (STOCK_IDS as readonly string[]).includes(id)
+    );
+    return new Set(arr);
+  }, [stockSelectedMap, viewId, stockVersion]);
+
+  // ---- Custom indicators ----
+  const customVersion = useCustomIndicatorStore((s) => s.version);
+  const toggleCustom = useCustomIndicatorStore((s) => s.toggleForView);
+  const startEditing = useCustomIndicatorStore((s) => s.startEditing);
+
+  const { allCustom, customChecked } = useMemo(() => {
+    const st = useCustomIndicatorStore.getState();
+    const allCustom = st.all(); // stable behind version changes
+    const list = st.listForView(viewId);
+    return { allCustom, customChecked: new Set(list) };
+  }, [customVersion, viewId]);
 
   return (
     <div className="relative">
       <button
-        className="px-2 py-1 rounded-lg border text-sm hover:bg-white/5 transition"
+        className="px-2 py-1 border rounded-md hover:bg-white/5"
         onClick={() => setOpen((v) => !v)}
         title="Indicators"
       >
@@ -45,57 +81,89 @@ export default function IndicatorsDialog() {
 
       {open && (
         <div
-          className="absolute z-50 mt-2 w-64 rounded-lg border bg-panel p-2 shadow-lg"
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setOpen(false);
-          }}
+          ref={popRef}
+          className="absolute z-40 mt-2 w-[420px] rounded-lg border bg-panel p-3 shadow-lg"
         >
-          <div className="px-2 py-1 text-xs opacity-70">Stock indicators</div>
-          <div className="max-h-72 overflow-auto py-1">
-            {INDICATOR_IDS.map((id) => {
-              const isOn = checked.has(id);
-              return (
-                <label
-                  key={id}
-                  className="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/5 cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={isOn}
-                    onChange={() => onToggle(id)}
-                  />
-                  <span className="text-sm uppercase tracking-wide">
-                    {labelFor(id)}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-
-          <div className="flex justify-end gap-2 px-2 py-1">
+          {/* Tabs header */}
+          <div className="flex items-center gap-2 mb-3">
             <button
-              className="px-2 py-1 rounded border hover:bg-white/5 text-xs"
-              onClick={() => setOpen(false)}
+              className={`px-2 py-1 rounded-md text-sm border ${tab === "stock" ? "bg-white/5" : "opacity-70"}`}
+              onClick={() => setTab("stock")}
             >
-              Close
+              Stock
+            </button>
+            <button
+              className={`px-2 py-1 rounded-md text-sm border ${tab === "custom" ? "bg-white/5" : "opacity-70"}`}
+              onClick={() => setTab("custom")}
+            >
+              Custom
             </button>
           </div>
+
+          {tab === "stock" ? (
+            <div>
+              <Section title="Built-in">
+                {STOCK_IDS.map((id) => (
+                  <div key={id} className="flex items-center justify-between py-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={stockChecked.has(id)}
+                        onChange={() => toggleStock(viewId, id)}
+                      />
+                      <span className="text-sm">{id.toUpperCase()}</span>
+                    </label>
+                  </div>
+                ))}
+              </Section>
+              <div className="text-[11px] opacity-60">
+                Tip: RSI/MACD render on their own sub-pane automatically.
+              </div>
+            </div>
+          ) : (
+            <div>
+              <Section title="Your saved indicators">
+                {allCustom.length === 0 && (
+                  <div className="text-xs opacity-70">
+                    No custom indicators yet. Use the Editor in the toolbar to add one.
+                  </div>
+                )}
+                {allCustom.map((ci) => (
+                  <div key={ci.id} className="flex items-center justify-between py-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={customChecked.has(ci.id)}
+                        onChange={() => toggleCustom(viewId, ci.id)}
+                      />
+                      <div className="flex flex-col">
+                        <span className="text-sm">{ci.name}</span>
+                        <span className="text-[11px] opacity-60">
+                          v{ci.version} · {ci.visibility}
+                        </span>
+                      </div>
+                    </label>
+
+                    {/* Edit button — don't toggle checkbox when clicked */}
+                    <button
+                      className="text-xs px-2 py-1 rounded border hover:bg-white/5"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        startEditing(ci.id);
+                        setOpen(false);
+                      }}
+                      title="Edit in editor"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                ))}
+              </Section>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
-
-const LABELS: Record<IndicatorId, string> = {
-  sma: "SMA (20)",
-  ema: "EMA (20)",
-  vwap: "VWAP",
-  bb: "Bollinger Bands",
-  rsi: "RSI (14)",
-  macd: "MACD (12,26,9)",
-};
-
-function labelFor(id: IndicatorId): string {
-  return LABELS[id];
-}
-
