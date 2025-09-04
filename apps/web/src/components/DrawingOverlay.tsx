@@ -259,12 +259,15 @@ export default function DrawingOverlay({
 
       // Labels
       const labelEntries = entries.filter(([, p]) => Array.isArray(p.labels) && p.labels.length > 0);
-      for (const [id, payload] of labelEntries) {
+      for (const [_id, payload] of labelEntries) {
         const { labels } = payload;
         if (!labels || labels.length === 0) continue;
         // debug log:
         // console.log("[overlay.labels] plot", id, "count", labels.length, "first", labels[0]);
-        for (const l of labels) drawLabel(l);
+       for (const l of labels) {
+          // Ensure required text field is a string
+         drawLabel({ ...l, text: l?.text ?? "" });
+      }
       }
 
       // ---- MANUAL DRAW OBJECTS ----

@@ -853,8 +853,17 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
                 reg.boxes(nsId, p.boxes, p.opts);
               }
               if (method === "plot:labels") {
-                const p = params as { labels: Array<{ time: number; price: number; text?: string; color?: string; bg?: string; align?: "above" | "below"; shape?: "up" | "down" | "circle"; size?: number; stroke?: string; strokeWidth?: number }>; opts?: Record<string, unknown> };
-                reg.labels(nsId, p.labels, p.opts);
+                const p = params as {
+                  labels: Array<{
+                    time: number; price: number; text?: string;
+                    color?: string; bg?: string; align?: "above" | "below";
+                    shape?: "up" | "down" | "circle"; size?: number; stroke?: string; strokeWidth?: number
+                  }>;
+                  opts?: Record<string, unknown>;
+                };
+                // Ensure `text` is always a string (IndicatorLabel requires it)
+                const safe = (p.labels ?? []).map(l => ({ ...l, text: l?.text ?? "" }));
+                reg.labels(nsId, safe as unknown as Parameters<PlotAdapter["labels"]>[1], p.opts);
               }
               reply(true);
               break;
