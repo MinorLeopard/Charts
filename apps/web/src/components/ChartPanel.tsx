@@ -109,14 +109,18 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     return () => a.chart.remove();
   }, []);
 
-  // load data
+  // primary data store
   const barsRef = useRef<OHLC[] | null>(null);
+  const [dataVersion, setDataVersion] = useState(0); // bump to recompute overlays after data changes
+
+  // load data from backend when symbol/timeframe changes
   useEffect(() => {
     if (!api) return;
     if (!effectiveSymbol) {
       api.clear();
       barsRef.current = [];
       setStatus("empty");
+      setDataVersion((v) => v + 1);
       return;
     }
 
@@ -131,16 +135,19 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
           api.clear();
           barsRef.current = [];
           setStatus("empty");
+          setDataVersion((v) => v + 1);
           return;
         }
         barsRef.current = bars;
         api.setData(bars);
         setStatus("ready");
+        setDataVersion((v) => v + 1);
       } catch (e) {
         console.error("fetchSeries error", e);
-        api?.clear();
+        api.clear();
         barsRef.current = [];
         setStatus("empty");
+        setDataVersion((v) => v + 1);
       }
     })();
 
@@ -148,6 +155,38 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       cancelled = true;
     };
   }, [api, mode, effectiveSymbol, tf]);
+
+  // Accept primary series pushed from Watchlist (via ClientChartsShell)
+  useEffect(() => {
+    if (!api) return;
+    const a = api; // non-null after guard above
+
+    function onLoadPrimary(e: Event) {
+      const { viewId: targetViewId, ohlc } = (e as CustomEvent).detail as {
+        viewId: string;
+        ohlc: OHLC[];
+        meta: { underlying: string; expiry: string; strike: number; optionType: "CE" | "PE" };
+        tf: string;
+      };
+      if (targetViewId !== viewId) return;
+
+      if (!ohlc || ohlc.length === 0) {
+        a.clear();
+        barsRef.current = [];
+        setStatus("empty");
+        setDataVersion((v) => v + 1);
+        return;
+      }
+
+      barsRef.current = ohlc;
+      a.setData(ohlc);
+      setStatus("ready");
+      setDataVersion((v) => v + 1);
+    }
+
+    window.addEventListener("chart:load-primary", onLoadPrimary);
+    return () => window.removeEventListener("chart:load-primary", onLoadPrimary);
+  }, [api, viewId]);
 
   // crosshair header
   useEffect(() => {
@@ -279,7 +318,6 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
   }, [api]);
 
   // ===== Indicators (compute + render) =====
-
   type AnySeries = ISeriesApi<"Line"> | ISeriesApi<"Histogram">;
   const overlaySeriesRef = useRef<Record<string, AnySeries | undefined>>({});
 
@@ -420,7 +458,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     []
   );
 
-  // ===== Built-ins compute helpers =====
+  // ===== Built-ins compute + render on changes
   const computeSMA = useCallback((bars: OHLC[], period = 20) => {
     const out: { time: number; value: number }[] = [];
     let sum = 0;
@@ -649,6 +687,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
     computeRSI,
     computeMACD,
     toLinePoints,
+    dataVersion, // recompute when bars change (fetch or watchlist import)
   ]);
 
   // --- Refresh overlays & panel series when symbol / timeframe changes
@@ -885,7 +924,7 @@ export default function ChartPanel({ panelId }: { panelId: "p1" | "p2" | "p3" | 
       worker.postMessage({
         type: "run",
         code: meta.code,
-        envSpec: { symbol: effectiveSymbol, timeframe: tf },
+        envSpec: { symbol: effectiveSymbol ?? "DEMO", timeframe: tf },
         timeoutMs: 2000,
       });
     }
